@@ -6,6 +6,19 @@ import { verifyPassword } from "@/lib/passwords";
 
 type AppRole = "admin" | "manager" | "viewer";
 
+type LocalLoginAttemptState = {
+  firstFailedAt: number;
+  failedCount: number;
+  lockedUntil: number;
+};
+
+const LOCAL_LOGIN_MAX_ATTEMPTS = 5;
+const LOCAL_LOGIN_WINDOW_MS = 15 * 60 * 1000;
+const LOCAL_LOGIN_LOCKOUT_MS = 15 * 60 * 1000;
+const LOCAL_LOGIN_FAILURE_DELAY_MS = 800;
+
+const localLoginAttempts = new Map<string, LocalLoginAttemptState>();
+
 function normalizeUsername(value: string) {
   return value.trim().toLowerCase();
 }
@@ -38,6 +51,57 @@ async function findEnabledAppUserByUsername(username: string) {
 
 function getAuthEnv(name: string) {
   return process.env[name] || "";
+}
+
+function sleep(ms: number) {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
+
+function localLoginAttemptKey(username: string) {
+  return `local:${normalizeUsername(username) || "unknown"}`;
+}
+
+function pruneLocalLoginAttempts(now: number) {
+  for (const [key, state] of localLoginAttempts.entries()) {
+    const isExpiredWindow = now - state.firstFailedAt > LOCAL_LOGIN_WINDOW_MS;
+    const isUnlocked = state.lockedUntil <= now;
+    if (isExpiredWindow && isUnlocked) {
+      localLoginAttempts.delete(key);
+    }
+  }
+}
+
+function isLocalLoginLocked(attemptKey: string, now: number) {
+  const state = localLoginAttempts.get(attemptKey);
+  return Boolean(state && state.lockedUntil > now);
+}
+
+function recordLocalLoginFailure(attemptKey: string, now: number) {
+  const existing = localLoginAttempts.get(attemptKey);
+  if (!existing || now - existing.firstFailedAt > LOCAL_LOGIN_WINDOW_MS) {
+    localLoginAttempts.set(attemptKey, {
+      firstFailedAt: now,
+      failedCount: 1,
+      lockedUntil: 0,
+    });
+    return;
+  }
+
+  const nextFailedCount = existing.failedCount + 1;
+  const lockedUntil =
+    nextFailedCount >= LOCAL_LOGIN_MAX_ATTEMPTS ? now + LOCAL_LOGIN_LOCKOUT_MS : existing.lockedUntil;
+
+  localLoginAttempts.set(attemptKey, {
+    ...existing,
+    failedCount: nextFailedCount,
+    lockedUntil,
+  });
+}
+
+function clearLocalLoginFailures(attemptKey: string) {
+  localLoginAttempts.delete(attemptKey);
 }
 
 function normalizeBaseUrl(value: string) {
@@ -81,15 +145,28 @@ export const authOptions: NextAuthOptions = {
         password: { label: "Password", type: "password" },
       },
       async authorize(credentials) {
+        const now = Date.now();
+        pruneLocalLoginAttempts(now);
+
         const username = normalizeUsername(String(credentials?.username || ""));
         const password = String(credentials?.password || "");
+        const attemptKey = localLoginAttemptKey(username);
+
+        if (isLocalLoginLocked(attemptKey, now)) {
+          await sleep(LOCAL_LOGIN_FAILURE_DELAY_MS);
+          return null;
+        }
+
         if (!username || !password) {
+          recordLocalLoginFailure(attemptKey, now);
+          await sleep(LOCAL_LOGIN_FAILURE_DELAY_MS);
           return null;
         }
 
         const envAdminUser = normalizeUsername(process.env.LOCAL_ADMIN_USERNAME || "");
         const envAdminPass = process.env.LOCAL_ADMIN_PASSWORD || "";
         if (envAdminUser && envAdminPass && username === envAdminUser && password === envAdminPass) {
+          clearLocalLoginFailures(attemptKey);
           return {
             id: "local-env-admin",
             name: envAdminUser,
@@ -103,12 +180,18 @@ export const authOptions: NextAuthOptions = {
 
         const appUser = await findEnabledAppUserByUsername(username);
         if (!appUser || !appUser.localPasswordHash) {
+          recordLocalLoginFailure(attemptKey, now);
+          await sleep(LOCAL_LOGIN_FAILURE_DELAY_MS);
           return null;
         }
 
         if (!verifyPassword(password, appUser.localPasswordHash)) {
+          recordLocalLoginFailure(attemptKey, now);
+          await sleep(LOCAL_LOGIN_FAILURE_DELAY_MS);
           return null;
         }
+
+        clearLocalLoginFailures(attemptKey);
 
         return {
           id: appUser.id,
