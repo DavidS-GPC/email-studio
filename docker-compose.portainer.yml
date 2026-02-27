@@ -3,6 +3,7 @@ services:
     image: davidscreations/email-studio:latest
     container_name: email-app
     restart: unless-stopped
+    user: "0:0"
     ports:
       - "3200:3200"
     environment:
@@ -10,6 +11,7 @@ services:
       RESEND_API_KEY: ${RESEND_API_KEY}
       RESEND_FROM_EMAIL: ${RESEND_FROM_EMAIL}
       NEXTAUTH_URL: ${NEXTAUTH_URL}
+      AUTH_PUBLIC_URL: ${AUTH_PUBLIC_URL}
       AUTH_SECRET: ${AUTH_SECRET}
       AUTH_AZURE_AD_ID: ${AUTH_AZURE_AD_ID}
       AUTH_AZURE_AD_SECRET: ${AUTH_AZURE_AD_SECRET}
@@ -21,9 +23,15 @@ services:
     volumes:
       - email_app_data:/app/data
       - email_app_uploads:/app/public/uploads
+    networks:
+      - cftunnel_default
 
 volumes:
   email_app_data:
     name: email_app_data
   email_app_uploads:
     name: email_app_uploads
+
+networks:
+  cftunnel_default:
+    external: true

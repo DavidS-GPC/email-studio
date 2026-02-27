@@ -33,6 +33,7 @@ DATABASE_URL="file:./dev.db"
 RESEND_API_KEY="re_xxxxx"
 RESEND_FROM_EMAIL="updates@yourdomain.com"
 NEXTAUTH_URL="http://localhost:3200"
+AUTH_PUBLIC_URL="http://localhost:3200"
 AUTH_SECRET="replace-with-random-secret"
 AUTH_AZURE_AD_ID="your-app-client-id"
 AUTH_AZURE_AD_SECRET="your-app-client-secret"
@@ -60,6 +61,8 @@ Open `http://localhost:3200`.
 For Microsoft Entra app registration, add this redirect URI:
 
 - `http://localhost:3200/api/auth/callback/azure-ad`
+
+When deploying behind Portainer/reverse proxies with a custom domain, set both `NEXTAUTH_URL` and `AUTH_PUBLIC_URL` to your public HTTPS URL (for example `https://email.example.com`).
 
 ## Access Control
 

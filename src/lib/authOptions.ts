@@ -40,6 +40,33 @@ function getAuthEnv(name: string) {
   return process.env[name] || "";
 }
 
+function normalizeBaseUrl(value: string) {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return "";
+  }
+
+  try {
+    return new URL(trimmed).origin;
+  } catch {
+    return "";
+  }
+}
+
+function resolveRedirectBaseUrl(baseUrl: string) {
+  const configuredPublic = normalizeBaseUrl(process.env.AUTH_PUBLIC_URL || "");
+  if (configuredPublic) {
+    return configuredPublic;
+  }
+
+  const configuredNextAuth = normalizeBaseUrl(process.env.NEXTAUTH_URL || "");
+  if (configuredNextAuth) {
+    return configuredNextAuth;
+  }
+
+  return normalizeBaseUrl(baseUrl) || baseUrl;
+}
+
 export const authOptions: NextAuthOptions = {
   providers: [
     AzureADProvider({
@@ -107,6 +134,26 @@ export const authOptions: NextAuthOptions = {
     signIn: "/signin",
   },
   callbacks: {
+    async redirect({ url, baseUrl }) {
+      const resolvedBaseUrl = resolveRedirectBaseUrl(baseUrl);
+
+      if (url.startsWith("/")) {
+        return `${resolvedBaseUrl}${url}`;
+      }
+
+      try {
+        const targetUrl = new URL(url);
+        const allowedOrigin = new URL(resolvedBaseUrl).origin;
+
+        if (targetUrl.origin === allowedOrigin) {
+          return targetUrl.toString();
+        }
+      } catch {
+        // Fall through to safe default.
+      }
+
+      return resolvedBaseUrl;
+    },
     async signIn({ account, profile, user }) {
       if (account?.provider !== "azure-ad") {
         return true;
