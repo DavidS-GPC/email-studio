@@ -3,19 +3,28 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "next dev",
+    "dev": "next dev -p 3200",
     "build": "next build",
-    "start": "next start",
+    "start": "next start -p 3200",
     "lint": "eslint"
   },
   "dependencies": {
+    "@prisma/client": "^6.16.1",
+    "grapesjs": "^0.22.14",
+    "grapesjs-preset-newsletter": "^1.0.2",
     "next": "16.1.6",
+    "next-auth": "^4.24.13",
+    "papaparse": "^5.5.3",
+    "prisma": "^6.16.1",
     "react": "19.2.3",
-    "react-dom": "19.2.3"
+    "react-dom": "19.2.3",
+    "resend": "^6.9.2",
+    "xlsx": "^0.18.5"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",
     "@types/node": "^20",
+    "@types/papaparse": "^5.5.2",
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "eslint": "^9",

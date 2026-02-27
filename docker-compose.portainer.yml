@@ -1,0 +1,29 @@
+services:
+  email-app:
+    image: davidscreations/email-studio:latest
+    container_name: email-app
+    restart: unless-stopped
+    ports:
+      - "3200:3200"
+    environment:
+      DATABASE_URL: file:/app/data/dev.db
+      RESEND_API_KEY: ${RESEND_API_KEY}
+      RESEND_FROM_EMAIL: ${RESEND_FROM_EMAIL}
+      NEXTAUTH_URL: ${NEXTAUTH_URL}
+      AUTH_SECRET: ${AUTH_SECRET}
+      AUTH_AZURE_AD_ID: ${AUTH_AZURE_AD_ID}
+      AUTH_AZURE_AD_SECRET: ${AUTH_AZURE_AD_SECRET}
+      AUTH_AZURE_AD_TENANT_ID: ${AUTH_AZURE_AD_TENANT_ID}
+      CONTACT_DATA_ENCRYPTION_KEY: ${CONTACT_DATA_ENCRYPTION_KEY}
+      CONTACT_DATA_HASH_PEPPER: ${CONTACT_DATA_HASH_PEPPER}
+      LOCAL_ADMIN_USERNAME: ${LOCAL_ADMIN_USERNAME}
+      LOCAL_ADMIN_PASSWORD: ${LOCAL_ADMIN_PASSWORD}
+    volumes:
+      - email_app_data:/app/data
+      - email_app_uploads:/app/public/uploads
+
+volumes:
+  email_app_data:
+    name: email_app_data
+  email_app_uploads:
+    name: email_app_uploads

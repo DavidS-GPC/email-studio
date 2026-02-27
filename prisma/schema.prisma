@@ -1,0 +1,106 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model AppUser {
+  id                String   @id @default(cuid())
+  username          String   @unique
+  displayName       String?
+  email             String?  @unique
+  role              String   @default("viewer")
+  enabled           Boolean  @default(true)
+  localPasswordHash String?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+}
+
+model Contact {
+  id          String           @id @default(cuid())
+  email       String
+  emailHash   String?          @unique
+  name        String?
+  company     String?
+  tagsCsv     String?
+  createdAt   DateTime         @default(now())
+  updatedAt   DateTime         @updatedAt
+  memberships GroupMembership[]
+  recipients  CampaignRecipient[]
+}
+
+model ContactGroup {
+  id          String            @id @default(cuid())
+  name        String            @unique
+  description String?
+  createdAt   DateTime          @default(now())
+  memberships GroupMembership[]
+  campaigns   Campaign[]
+}
+
+model GroupMembership {
+  id        String       @id @default(cuid())
+  contactId String
+  groupId   String
+  createdAt DateTime     @default(now())
+  contact   Contact      @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  group     ContactGroup @relation(fields: [groupId], references: [id], onDelete: Cascade)
+
+  @@unique([contactId, groupId])
+}
+
+model EmailTemplate {
+  id          String     @id @default(cuid())
+  name        String
+  description String?
+  subject     String
+  html        String
+  designJson  String?
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+  campaigns   Campaign[]
+}
+
+model Campaign {
+  id            String              @id @default(cuid())
+  name          String
+  subject       String
+  html          String
+  status        String              @default("draft")
+  sendMode      String              @default("now")
+  scheduledFor  DateTime?
+  staggerMinutes Int?
+  processingStartedAt DateTime?
+  sendFailureReport Boolean         @default(false)
+  failureReportEmail String?
+  attachmentRaw String?
+  createdAt     DateTime            @default(now())
+  sentAt        DateTime?
+  groupId       String?
+  templateId    String?
+  group         ContactGroup?       @relation(fields: [groupId], references: [id], onDelete: SetNull)
+  template      EmailTemplate?      @relation(fields: [templateId], references: [id], onDelete: SetNull)
+  recipients    CampaignRecipient[]
+}
+
+model CampaignRecipient {
+  id         String   @id @default(cuid())
+  campaignId String
+  contactId  String
+  email      String
+  status     String   @default("pending")
+  messageId  String?
+  error      String?
+  sentAt     DateTime?
+  campaign   Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  contact    Contact  @relation(fields: [contactId], references: [id], onDelete: Cascade)
+
+  @@index([campaignId])
+  @@index([contactId])
+}
