@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { hashPassword } from "@/lib/passwords";
 import { requireAdminIdentity } from "@/lib/routeAuth";
+import { writeAuditLog } from "@/lib/auditLog";
 
 type AppRole = "admin" | "manager" | "viewer";
 
@@ -84,6 +85,20 @@ export async function POST(request: Request) {
       enabled: true,
       createdAt: true,
       updatedAt: true,
+    },
+  });
+
+  await writeAuditLog({
+    actorUserId: admin.identity.appUserId,
+    actorUsername: admin.identity.username,
+    action: "admin_user_create",
+    targetType: "app_user",
+    targetId: user.id,
+    metadata: {
+      username: user.username,
+      role: user.role,
+      enabled: user.enabled,
+      hasLocalPassword: Boolean(password),
     },
   });
 

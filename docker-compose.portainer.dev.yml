@@ -1,11 +1,11 @@
 services:
-  email-app:
-    image: davidscreations/email-studio:latest
-    container_name: email-app
+  email-app-dev:
+    image: davidscreations/email-studio:dev-latest
+    container_name: email-app-dev
     restart: unless-stopped
     user: "0:0"
     ports:
-      - "3200:3200"
+      - "3201:3200"
     environment:
       DATABASE_URL: file:/app/data/dev.db
       RESEND_API_KEY: ${RESEND_API_KEY}
@@ -22,19 +22,19 @@ services:
       LOCAL_ADMIN_USERNAME: ${LOCAL_ADMIN_USERNAME}
       LOCAL_ADMIN_PASSWORD: ${LOCAL_ADMIN_PASSWORD}
     volumes:
-      - email_app_data:/app/data
-      - email_app_uploads:/app/public/uploads
+      - email_app_dev_data:/app/data
+      - email_app_dev_uploads:/app/public/uploads
     networks:
       - cftunnel_default
 
-  campaign-scheduler:
+  campaign-scheduler-dev:
     image: curlimages/curl:8.12.1
-    container_name: campaign-scheduler
+    container_name: campaign-scheduler-dev
     restart: unless-stopped
     depends_on:
-      - email-app
+      - email-app-dev
     environment:
-      APP_INTERNAL_URL: http://email-app:3200
+      APP_INTERNAL_URL: http://email-app-dev:3200
       CAMPAIGN_PROCESS_SECRET: ${CAMPAIGN_PROCESS_SECRET}
       CAMPAIGN_PROCESS_INTERVAL_SECONDS: ${CAMPAIGN_PROCESS_INTERVAL_SECONDS:-60}
     command:
@@ -50,10 +50,10 @@ services:
       - cftunnel_default
 
 volumes:
-  email_app_data:
-    name: email_app_data
-  email_app_uploads:
-    name: email_app_uploads
+  email_app_dev_data:
+    name: email_app_dev_data
+  email_app_dev_uploads:
+    name: email_app_dev_uploads
 
 networks:
   cftunnel_default:

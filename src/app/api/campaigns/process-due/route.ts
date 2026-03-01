@@ -1,14 +1,28 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { executeCampaignSend } from "@/lib/campaignSend";
+import { requireSessionIdentity } from "@/lib/routeAuth";
 
-export async function POST() {
+export async function POST(request: Request) {
+  const configuredSecret = process.env.CAMPAIGN_PROCESS_SECRET?.trim();
+  const providedSecret = request.headers.get("x-campaign-cron-secret")?.trim();
+  const hasValidSecret = Boolean(configuredSecret) && Boolean(providedSecret) && providedSecret === configuredSecret;
+
+  if (!hasValidSecret) {
+    const auth = await requireSessionIdentity();
+    if (auth.error) {
+      return auth.error;
+    }
+  }
+
   const now = new Date();
 
   const dueCampaigns = await prisma.campaign.findMany({
     where: {
       status: "scheduled",
-      sendMode: "scheduled",
+      sendMode: {
+        in: ["scheduled", "staggered"],
+      },
       scheduledFor: {
         lte: now,
       },

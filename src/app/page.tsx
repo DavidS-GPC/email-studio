@@ -4,6 +4,8 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { Editor } from "grapesjs";
 import { signOut } from "next-auth/react";
 import EmailBuilder from "@/components/EmailBuilder";
+import { DEFAULT_TIMEZONE } from "@/lib/constants";
+import { formatInTimeZone } from "@/lib/timezone";
 
 type Template = {
   id: string;
@@ -67,13 +69,23 @@ type CurrentUser = {
   source: "entra" | "local-db" | "local-env";
 };
 
+type AppSettings = {
+  defaultTimezone: string;
+};
+
 const tabs = ["Contacts", "Groups", "Templates", "Campaigns"] as const;
 
 async function readApiJson<T>(response: Response, endpoint: string): Promise<T> {
   const raw = await response.text();
 
   if (!response.ok) {
-    throw new Error(`${endpoint} failed (${response.status}): ${raw.slice(0, 180) || "Empty response"}`);
+    const error = new Error(`${endpoint} failed (${response.status}): ${raw.slice(0, 180) || "Empty response"}`) as Error & {
+      status?: number;
+      endpoint?: string;
+    };
+    error.status = response.status;
+    error.endpoint = endpoint;
+    throw error;
   }
 
   if (!raw.trim()) {
@@ -96,6 +108,7 @@ export default function Home() {
   const [campaigns, setCampaigns] = useState<Campaign[]>([]);
   const [status, setStatus] = useState<string>("Loading data...");
   const [currentUser, setCurrentUser] = useState<CurrentUser | null>(null);
+  const [defaultTimezone, setDefaultTimezone] = useState(DEFAULT_TIMEZONE);
 
   const [selectedTemplateId, setSelectedTemplateId] = useState<string>("");
   const [templateName, setTemplateName] = useState("");
@@ -138,7 +151,8 @@ export default function Home() {
   const [campaignTemplateId, setCampaignTemplateId] = useState("");
   const [campaignSendMode, setCampaignSendMode] = useState<"now" | "scheduled" | "staggered">("now");
   const [campaignScheduledFor, setCampaignScheduledFor] = useState("");
-  const [campaignStaggerMinutes, setCampaignStaggerMinutes] = useState("60");
+  const [campaignStaggerStart, setCampaignStaggerStart] = useState("");
+  const [campaignStaggerEnd, setCampaignStaggerEnd] = useState("");
   const [campaignSendFailureReport, setCampaignSendFailureReport] = useState(false);
   const [campaignFailureReportEmail, setCampaignFailureReportEmail] = useState("");
   const [isCampaignPreviewOpen, setIsCampaignPreviewOpen] = useState(false);
@@ -238,24 +252,27 @@ export default function Home() {
       method: "POST",
     }).catch(() => null);
 
-    const [templateRes, groupRes, contactRes, campaignRes] = await Promise.all([
+    const [templateRes, groupRes, contactRes, campaignRes, settingsRes] = await Promise.all([
       fetch("/api/templates"),
       fetch("/api/groups"),
       fetch("/api/contacts"),
       fetch("/api/campaigns"),
+      fetch("/api/settings"),
     ]);
 
-    const [templateData, groupData, contactData, campaignData] = await Promise.all([
+    const [templateData, groupData, contactData, campaignData, settingsData] = await Promise.all([
       readApiJson<Template[]>(templateRes, "/api/templates"),
       readApiJson<Group[]>(groupRes, "/api/groups"),
       readApiJson<Contact[]>(contactRes, "/api/contacts"),
       readApiJson<Campaign[]>(campaignRes, "/api/campaigns"),
+      readApiJson<AppSettings>(settingsRes, "/api/settings"),
     ]);
 
     setTemplates(templateData);
     setGroups(groupData);
     setContacts(contactData);
     setCampaigns(campaignData);
+    setDefaultTimezone(settingsData.defaultTimezone || DEFAULT_TIMEZONE);
 
     const selectedStillExists = templateData.some((item) => item.id === selectedTemplateId);
 
@@ -276,6 +293,14 @@ export default function Home() {
   useEffect(() => {
     const loadTimer = window.setTimeout(() => {
       refreshAll().catch((error) => {
+        const status = typeof (error as { status?: unknown })?.status === "number" ? (error as { status: number }).status : 0;
+        if (status === 401 || status === 403) {
+          const callbackUrl = `${window.location.pathname}${window.location.search}`;
+          setStatus("Session expired. Redirecting to sign in...");
+          window.location.href = `/signin?callbackUrl=${encodeURIComponent(callbackUrl)}`;
+          return;
+        }
+
         setStatus(`Load error: ${error instanceof Error ? error.message : "Unknown"}`);
       });
     }, 0);
@@ -287,7 +312,19 @@ export default function Home() {
 
   useEffect(() => {
     fetch("/api/me")
-      .then((response) => response.json())
+      .then(async (response) => {
+        if (!response.ok) {
+          if (response.status === 401 || response.status === 403) {
+            const callbackUrl = `${window.location.pathname}${window.location.search}`;
+            window.location.href = `/signin?callbackUrl=${encodeURIComponent(callbackUrl)}`;
+            return null;
+          }
+
+          throw new Error(`Failed to load current user (${response.status})`);
+        }
+
+        return response.json();
+      })
       .then((payload) => {
         if (payload?.username && payload?.role) {
           setCurrentUser(payload as CurrentUser);
@@ -749,9 +786,26 @@ export default function Home() {
     }
 
     if (campaignSendMode === "staggered") {
-      const minutes = Number.parseInt(campaignStaggerMinutes, 10);
-      if (Number.isNaN(minutes) || minutes < 1) {
-        setStatus("Stagger duration must be at least 1 minute");
+      if (!campaignStaggerStart || !campaignStaggerEnd) {
+        setStatus("Choose both stagger start and end date/time");
+        return;
+      }
+
+      const staggerStart = new Date(campaignStaggerStart);
+      const staggerEnd = new Date(campaignStaggerEnd);
+
+      if (Number.isNaN(staggerStart.getTime()) || Number.isNaN(staggerEnd.getTime())) {
+        setStatus("Choose valid stagger start and end date/time values");
+        return;
+      }
+
+      if (staggerStart.getTime() <= Date.now()) {
+        setStatus("Stagger start date/time must be in the future");
+        return;
+      }
+
+      if (staggerEnd.getTime() <= staggerStart.getTime()) {
+        setStatus("Stagger end date/time must be after the start date/time");
         return;
       }
     }
@@ -771,8 +825,10 @@ export default function Home() {
         subject: campaignSubject,
         html: campaignHtml,
         sendMode: campaignSendMode,
-        scheduledFor: campaignSendMode === "scheduled" ? new Date(campaignScheduledFor).toISOString() : null,
-        staggerMinutes: campaignSendMode === "staggered" ? Number.parseInt(campaignStaggerMinutes, 10) : null,
+        timeZone: defaultTimezone,
+        scheduledForLocal: campaignSendMode === "scheduled" ? campaignScheduledFor : null,
+        staggerStartLocal: campaignSendMode === "staggered" ? campaignStaggerStart : null,
+        staggerEndLocal: campaignSendMode === "staggered" ? campaignStaggerEnd : null,
         sendFailureReport: campaignSendFailureReport,
         failureReportEmail: campaignSendFailureReport ? campaignFailureReportEmail.trim().toLowerCase() : null,
         attachments,
@@ -792,14 +848,15 @@ export default function Home() {
     setCampaignTemplateId("");
     setCampaignSendMode("now");
     setCampaignScheduledFor("");
-    setCampaignStaggerMinutes("60");
+    setCampaignStaggerStart("");
+    setCampaignStaggerEnd("");
     setCampaignSendFailureReport(false);
     setCampaignFailureReportEmail("");
     setCampaignSubject("");
     setCampaignHtml("");
     setAttachments([]);
 
-    if (campaignSendMode === "scheduled") {
+    if (campaignSendMode === "scheduled" || campaignSendMode === "staggered") {
       setStatus("Campaign scheduled successfully");
     } else {
       setStatus(`Campaign sent. Success: ${data.sent || 0}, Failed: ${data.failed || 0}`);
@@ -1011,7 +1068,7 @@ export default function Home() {
                   name="file"
                   accept=".csv,.xlsx,.xls"
                   required
-                  className="field"
+                  className="field file:mr-3 file:rounded-lg file:border file:border-slate-300 file:bg-slate-100 file:px-3 file:py-2 file:text-sm file:font-medium file:text-slate-700 hover:file:bg-slate-200"
                 />
                 <input
                   placeholder="Optional fallback group name"
@@ -1395,29 +1452,42 @@ export default function Home() {
                 >
                   <option value="now">Send now</option>
                   <option value="scheduled">Send on specific date/time</option>
-                  <option value="staggered">Stagger send over a period</option>
+                  <option value="staggered">Stagger send over date range</option>
                 </select>
 
                 {campaignSendMode === "scheduled" && (
-                  <input
-                    required
-                    type="datetime-local"
-                    value={campaignScheduledFor}
-                    onChange={(event) => setCampaignScheduledFor(event.target.value)}
-                    className="field"
-                  />
+                  <div className="space-y-2">
+                    <input
+                      required
+                      type="datetime-local"
+                      value={campaignScheduledFor}
+                      onChange={(event) => setCampaignScheduledFor(event.target.value)}
+                      className="field"
+                    />
+                    <p className="text-xs subtle-text">Timezone: {defaultTimezone}</p>
+                  </div>
                 )}
 
                 {campaignSendMode === "staggered" && (
-                  <input
-                    required
-                    type="number"
-                    min={1}
-                    placeholder="Total stagger duration in minutes"
-                    value={campaignStaggerMinutes}
-                    onChange={(event) => setCampaignStaggerMinutes(event.target.value)}
-                    className="field"
-                  />
+                  <div className="space-y-2">
+                    <div className="grid gap-3 md:grid-cols-2">
+                      <input
+                        required
+                        type="datetime-local"
+                        value={campaignStaggerStart}
+                        onChange={(event) => setCampaignStaggerStart(event.target.value)}
+                        className="field"
+                      />
+                      <input
+                        required
+                        type="datetime-local"
+                        value={campaignStaggerEnd}
+                        onChange={(event) => setCampaignStaggerEnd(event.target.value)}
+                        className="field"
+                      />
+                    </div>
+                    <p className="text-xs subtle-text">Timezone: {defaultTimezone}</p>
+                  </div>
                 )}
 
                 <label className="flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700">
@@ -1491,7 +1561,9 @@ export default function Home() {
                 </div>
 
                 <button type="submit" className="primary-btn">
-                  {campaignSendMode === "scheduled" ? "Schedule campaign" : "Create and send campaign"}
+                  {campaignSendMode === "scheduled" || campaignSendMode === "staggered"
+                    ? "Schedule campaign"
+                    : "Create and send campaign"}
                 </button>
                 <button
                   type="button"
@@ -1521,10 +1593,10 @@ export default function Home() {
                         <p className="text-xs text-slate-500">
                           Mode: {campaign.sendMode === "scheduled" ? "Scheduled" : campaign.sendMode === "staggered" ? "Staggered" : "Send now"}
                           {campaign.sendMode === "scheduled" && campaign.scheduledFor
-                            ? ` • Runs at ${new Date(campaign.scheduledFor).toLocaleString()}`
+                            ? ` • Runs at ${formatInTimeZone(campaign.scheduledFor, defaultTimezone)} (${defaultTimezone})`
                             : ""}
                           {campaign.sendMode === "staggered" && campaign.staggerMinutes
-                            ? ` • Duration: ${campaign.staggerMinutes} min`
+                            ? ` • Runs ${campaign.scheduledFor ? `from ${formatInTimeZone(campaign.scheduledFor, defaultTimezone)} to ${formatInTimeZone(new Date(new Date(campaign.scheduledFor).getTime() + campaign.staggerMinutes * 60_000).toISOString(), defaultTimezone)} (${defaultTimezone})` : `for ${campaign.staggerMinutes} min`}`
                             : ""}
                         </p>
                       </div>

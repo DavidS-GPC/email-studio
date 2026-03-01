@@ -1,4 +1,5 @@
 import { mkdir, writeFile, readFile, readdir, stat } from "node:fs/promises";
+import { lookup } from "node:dns/promises";
 import net from "node:net";
 import path from "node:path";
 
@@ -18,6 +19,12 @@ export type StoredUploadImage = {
 
 const MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024;
 const ALLOWED_IMAGE_MIME_TYPES = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]);
+const MAX_REMOTE_ATTACHMENT_REDIRECTS = 3;
+
+type SupportedImageType = {
+  extension: "png" | "jpg" | "gif" | "webp";
+  mimeType: "image/png" | "image/jpeg" | "image/gif" | "image/webp";
+};
 
 function isImageFileName(fileName: string) {
   const extension = path.extname(fileName).toLowerCase();
@@ -71,6 +78,100 @@ function isForbiddenHostname(hostname: string) {
   }
 
   return false;
+}
+
+async function assertHostnameResolvesToPublicIp(hostname: string) {
+  const records = await lookup(hostname, { all: true, verbatim: true });
+  if (records.length === 0) {
+    throw new Error("URL host could not be resolved");
+  }
+
+  for (const record of records) {
+    if (isPrivateOrLocalIp(record.address)) {
+      throw new Error("URL host resolves to a blocked address");
+    }
+  }
+}
+
+function detectImageType(content: Buffer): SupportedImageType | null {
+  if (content.length < 12) {
+    return null;
+  }
+
+  const isPng =
+    content[0] === 0x89 &&
+    content[1] === 0x50 &&
+    content[2] === 0x4e &&
+    content[3] === 0x47 &&
+    content[4] === 0x0d &&
+    content[5] === 0x0a &&
+    content[6] === 0x1a &&
+    content[7] === 0x0a;
+  if (isPng) {
+    return { extension: "png", mimeType: "image/png" };
+  }
+
+  const isJpeg = content[0] === 0xff && content[1] === 0xd8 && content[2] === 0xff;
+  if (isJpeg) {
+    return { extension: "jpg", mimeType: "image/jpeg" };
+  }
+
+  const gifHeader = content.subarray(0, 6).toString("ascii");
+  if (gifHeader === "GIF87a" || gifHeader === "GIF89a") {
+    return { extension: "gif", mimeType: "image/gif" };
+  }
+
+  const riffHeader = content.subarray(0, 4).toString("ascii");
+  const webpHeader = content.subarray(8, 12).toString("ascii");
+  if (riffHeader === "RIFF" && webpHeader === "WEBP") {
+    return { extension: "webp", mimeType: "image/webp" };
+  }
+
+  return null;
+}
+
+async function fetchRemoteAttachmentContent(inputUrl: string): Promise<Buffer | null> {
+  let currentUrl = inputUrl;
+
+  for (let attempt = 0; attempt <= MAX_REMOTE_ATTACHMENT_REDIRECTS; attempt += 1) {
+    const parsed = new URL(currentUrl);
+    await assertHostnameResolvesToPublicIp(parsed.hostname);
+
+    const response = await fetch(currentUrl, {
+      signal: AbortSignal.timeout(10_000),
+      redirect: "manual",
+    });
+
+    if (response.status >= 300 && response.status < 400) {
+      const location = response.headers.get("location");
+      if (!location) {
+        return null;
+      }
+
+      const nextUrl = new URL(location, currentUrl).toString();
+      currentUrl = ensureSafeExternalAttachmentUrl(nextUrl);
+      continue;
+    }
+
+    if (!response.ok) {
+      return null;
+    }
+
+    const contentLengthRaw = response.headers.get("content-length") || "0";
+    const contentLength = Number.parseInt(contentLengthRaw, 10);
+    if (Number.isFinite(contentLength) && contentLength > MAX_ATTACHMENT_BYTES) {
+      return null;
+    }
+
+    const arr = await response.arrayBuffer();
+    if (arr.byteLength > MAX_ATTACHMENT_BYTES) {
+      return null;
+    }
+
+    return Buffer.from(arr);
+  }
+
+  return null;
 }
 
 export function ensureSafeExternalAttachmentUrl(value: string) {
@@ -140,7 +241,7 @@ export async function listStoredUploadImages(limit = 40): Promise<StoredUploadIm
 }
 
 export async function saveUploadFile(file: File): Promise<StoredAttachment> {
-  if (!ALLOWED_IMAGE_MIME_TYPES.has(file.type)) {
+  if (file.type && !ALLOWED_IMAGE_MIME_TYPES.has(file.type)) {
     throw new Error("Only PNG, JPG, GIF, and WEBP images are allowed");
   }
 
@@ -151,13 +252,19 @@ export async function saveUploadFile(file: File): Promise<StoredAttachment> {
   const uploadDir = path.join(process.cwd(), "public", "uploads");
   await mkdir(uploadDir, { recursive: true });
 
-  const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, "_");
-  const id = `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
-  const filename = `${id}-${safeName}`;
-  const filePath = path.join(uploadDir, filename);
-  const bytes = await file.arrayBuffer();
+  const bytes = Buffer.from(await file.arrayBuffer());
+  const detectedImageType = detectImageType(bytes);
+  if (!detectedImageType) {
+    throw new Error("Uploaded file is not a supported image");
+  }
 
-  await writeFile(filePath, Buffer.from(bytes));
+  const baseName = path.basename(file.name, path.extname(file.name));
+  const safeBaseName = (baseName || "upload").replace(/[^a-zA-Z0-9_-]/g, "_");
+  const id = `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+  const filename = `${id}-${safeBaseName}.${detectedImageType.extension}`;
+  const filePath = path.join(uploadDir, filename);
+
+  await writeFile(filePath, bytes);
 
   return {
     id,
@@ -191,26 +298,14 @@ export async function toResendAttachments(attachmentsRaw: string | null | undefi
 
     if (attachment.type === "url") {
       const safeUrl = ensureSafeExternalAttachmentUrl(attachment.url);
-      const response = await fetch(safeUrl, {
-        signal: AbortSignal.timeout(10_000),
-      });
-      if (!response.ok) {
-        continue;
-      }
-
-      const contentLength = Number.parseInt(response.headers.get("content-length") || "0", 10);
-      if (contentLength > MAX_ATTACHMENT_BYTES) {
-        continue;
-      }
-
-      const arr = await response.arrayBuffer();
-      if (arr.byteLength > MAX_ATTACHMENT_BYTES) {
+      const content = await fetchRemoteAttachmentContent(safeUrl);
+      if (!content) {
         continue;
       }
 
       resendAttachments.push({
         filename: attachment.name,
-        content: Buffer.from(arr),
+        content,
       });
     }
   }

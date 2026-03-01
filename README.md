@@ -40,6 +40,7 @@ AUTH_AZURE_AD_SECRET="your-app-client-secret"
 AUTH_AZURE_AD_TENANT_ID="your-tenant-id"
 CONTACT_DATA_ENCRYPTION_KEY="base64-encoded-32-byte-key"
 CONTACT_DATA_HASH_PEPPER="long-random-pepper-string"
+CAMPAIGN_PROCESS_SECRET="long-random-shared-secret-for-cron-calls"
 LOCAL_ADMIN_USERNAME="local-admin"
 LOCAL_ADMIN_PASSWORD="change-me-strong-password"
 ```
@@ -123,6 +124,7 @@ This rewrites legacy plaintext contact fields and existing campaign recipient em
 - Build using `Dockerfile` without any `ARG` for secrets.
 - Provide `RESEND_API_KEY` only at runtime (Portainer environment variables or Docker secrets), never during `docker build`.
 - Use `docker-compose.portainer.yml` and set env vars in Portainer UI instead of committing `.env`.
+- Use `docker-compose.portainer.dev.yml` for an isolated development stack in Portainer.
 - Optional verification after build:
 
 ```bash
@@ -148,3 +150,25 @@ These checks should not reveal your secret values unless you inject them at runt
 4. Redeploy the stack without removing volumes.
 
 As long as the named volumes are preserved, user data survives container/image updates.
+
+## Autonomous scheduled campaign processing
+
+- Set `CAMPAIGN_PROCESS_SECRET` in your runtime environment.
+- The Portainer compose files include an internal scheduler container that calls `/api/campaigns/process-due` every 60 seconds by default.
+- Set `CAMPAIGN_PROCESS_INTERVAL_SECONDS` to tune the interval.
+- No external cron service is required when using the provided compose stacks.
+
+- Calls with a valid secret are accepted without a logged-in browser session.
+- Calls without the secret still require normal authenticated user access.
+
+## Branch-based Docker images
+
+- Pushes to `main`/`master` publish production tags (`latest`, `0.1`).
+- Pushes to `dev` publish development tags (`dev-latest`, plus `dev-<gitsha>`).
+- Git tags like `v1.2.3` publish matching version tags.
+
+Recommended Portainer setup:
+
+- Production stack uses `docker-compose.portainer.yml` with `davidscreations/email-studio:latest`.
+- Development stack uses `docker-compose.portainer.dev.yml` with `davidscreations/email-studio:dev-latest`.
+- Keep production and development stacks on separate volume names (already configured) so data remains isolated.

@@ -9,6 +9,20 @@ function isPublicAssetPath(pathname: string) {
   return pathname === "/favicon.ico" || pathname === "/robots.txt" || pathname === "/sitemap.xml";
 }
 
+function hasValidCampaignProcessSecret(request: NextRequest, pathname: string) {
+  if (pathname !== "/api/campaigns/process-due") {
+    return false;
+  }
+
+  const configuredSecret = process.env.CAMPAIGN_PROCESS_SECRET?.trim();
+  if (!configuredSecret) {
+    return false;
+  }
+
+  const providedSecret = request.headers.get("x-campaign-cron-secret")?.trim();
+  return Boolean(providedSecret) && providedSecret === configuredSecret;
+}
+
 export async function middleware(request: NextRequest) {
   const { pathname, search } = request.nextUrl;
 
@@ -21,6 +35,10 @@ export async function middleware(request: NextRequest) {
   const isAdminRoute = pathname === "/admin" || pathname.startsWith("/admin/");
 
   if (isAuthRoute) {
+    return NextResponse.next();
+  }
+
+  if (hasValidCampaignProcessSecret(request, pathname)) {
     return NextResponse.next();
   }
 

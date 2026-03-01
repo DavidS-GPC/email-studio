@@ -3,6 +3,7 @@ import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { hashPassword } from "@/lib/passwords";
 import { requireAdminIdentity } from "@/lib/routeAuth";
+import { writeAuditLog } from "@/lib/auditLog";
 
 type Params = {
   params: Promise<{ id: string }>;
@@ -60,6 +61,19 @@ export async function PATCH(request: Request, { params }: Params) {
         enabled: true,
         createdAt: true,
         updatedAt: true,
+      },
+    });
+
+    await writeAuditLog({
+      actorUserId: admin.identity.appUserId,
+      actorUsername: admin.identity.username,
+      action: "admin_user_update",
+      targetType: "app_user",
+      targetId: updated.id,
+      metadata: {
+        role: updated.role,
+        enabled: updated.enabled,
+        hasPasswordChange: Boolean(password),
       },
     });
 

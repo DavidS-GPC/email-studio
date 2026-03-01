@@ -3,6 +3,8 @@ import { prisma } from "@/lib/prisma";
 import { executeCampaignSend } from "@/lib/campaignSend";
 import { ensureSafeExternalAttachmentUrl } from "@/lib/attachments";
 import { decryptText } from "@/lib/contactSecurity";
+import { getDefaultTimezone, isValidTimeZone } from "@/lib/appSettings";
+import { localDateTimeInZoneToUtc } from "@/lib/timezone";
 
 type CampaignAttachment = {
   type: "upload" | "url";
@@ -89,20 +91,40 @@ export async function GET() {
 export async function POST(request: Request) {
   const body = await request.json();
   const sendMode = normalizeSendMode(body.sendMode);
+  const requestTimezone = typeof body.timeZone === "string" ? body.timeZone.trim() : "";
+  const timeZone = requestTimezone && isValidTimeZone(requestTimezone) ? requestTimezone : await getDefaultTimezone();
   const sendFailureReport = Boolean(body.sendFailureReport);
   const failureReportEmail =
     typeof body.failureReportEmail === "string" && body.failureReportEmail.trim().length > 0
       ? body.failureReportEmail.trim().toLowerCase()
       : null;
 
-  const scheduledFor =
-    sendMode === "scheduled" && typeof body.scheduledFor === "string" && body.scheduledFor.trim().length > 0
-      ? new Date(body.scheduledFor)
-      : null;
+  let scheduledFor: Date | null = null;
+  let staggerStart: Date | null = null;
+  let staggerEnd: Date | null = null;
+
+  try {
+    scheduledFor =
+      sendMode === "scheduled" && typeof body.scheduledForLocal === "string" && body.scheduledForLocal.trim().length > 0
+        ? localDateTimeInZoneToUtc(body.scheduledForLocal.trim(), timeZone)
+        : null;
+
+    staggerStart =
+      sendMode === "staggered" && typeof body.staggerStartLocal === "string" && body.staggerStartLocal.trim().length > 0
+        ? localDateTimeInZoneToUtc(body.staggerStartLocal.trim(), timeZone)
+        : null;
+
+    staggerEnd =
+      sendMode === "staggered" && typeof body.staggerEndLocal === "string" && body.staggerEndLocal.trim().length > 0
+        ? localDateTimeInZoneToUtc(body.staggerEndLocal.trim(), timeZone)
+        : null;
+  } catch {
+    return NextResponse.json({ error: "A valid scheduled date/time is required" }, { status: 400 });
+  }
 
   const staggerMinutes =
-    sendMode === "staggered"
-      ? Math.max(1, Number.parseInt(String(body.staggerMinutes || ""), 10) || 0)
+    sendMode === "staggered" && staggerStart && staggerEnd
+      ? Math.max(1, Math.ceil((staggerEnd.getTime() - staggerStart.getTime()) / 60_000))
       : null;
 
   if (sendMode === "scheduled") {
@@ -115,8 +137,18 @@ export async function POST(request: Request) {
     }
   }
 
-  if (sendMode === "staggered" && !staggerMinutes) {
-    return NextResponse.json({ error: "Stagger duration must be at least 1 minute" }, { status: 400 });
+  if (sendMode === "staggered") {
+    if (!staggerStart || Number.isNaN(staggerStart.getTime()) || !staggerEnd || Number.isNaN(staggerEnd.getTime())) {
+      return NextResponse.json({ error: "Valid stagger start/end date-times are required" }, { status: 400 });
+    }
+
+    if (staggerStart.getTime() <= Date.now()) {
+      return NextResponse.json({ error: "Stagger start date/time must be in the future" }, { status: 400 });
+    }
+
+    if (staggerEnd.getTime() <= staggerStart.getTime()) {
+      return NextResponse.json({ error: "Stagger end date/time must be after the start date/time" }, { status: 400 });
+    }
   }
 
   if (sendFailureReport && !failureReportEmail) {
@@ -129,8 +161,8 @@ export async function POST(request: Request) {
       subject: body.subject,
       html: body.html,
       sendMode,
-      status: sendMode === "scheduled" ? "scheduled" : "draft",
-      scheduledFor,
+      status: sendMode === "scheduled" || sendMode === "staggered" ? "scheduled" : "draft",
+      scheduledFor: sendMode === "staggered" ? staggerStart : scheduledFor,
       staggerMinutes,
       sendFailureReport,
       failureReportEmail,
@@ -140,7 +172,7 @@ export async function POST(request: Request) {
     },
   });
 
-  if (sendMode === "now" || sendMode === "staggered") {
+  if (sendMode === "now") {
     try {
       const sendResult = await executeCampaignSend(campaign.id);
       return NextResponse.json({ campaignId: campaign.id, sendMode, ...sendResult }, { status: 201 });

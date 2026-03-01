@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import Papa from "papaparse";
-import * as XLSX from "xlsx";
+import ExcelJS from "exceljs";
 import { prisma } from "@/lib/prisma";
 import {
   encryptNullable,
@@ -24,9 +24,45 @@ function normalizeText(value: unknown) {
   return value.trim();
 }
 
-function parseRows(fileName: string, text: string): ContactRow[] {
+function cellToText(value: ExcelJS.CellValue | null | undefined): string {
+  if (typeof value === "string") {
+    return value;
+  }
+
+  if (typeof value === "number" || typeof value === "boolean") {
+    return String(value);
+  }
+
+  if (value instanceof Date) {
+    return value.toISOString();
+  }
+
+  if (!value || typeof value !== "object") {
+    return "";
+  }
+
+  if ("text" in value && typeof value.text === "string") {
+    return value.text;
+  }
+
+  if ("result" in value && (typeof value.result === "string" || typeof value.result === "number")) {
+    return String(value.result);
+  }
+
+  if ("richText" in value && Array.isArray(value.richText)) {
+    return value.richText.map((item) => item.text || "").join("");
+  }
+
+  if ("hyperlink" in value && typeof value.hyperlink === "string") {
+    return value.hyperlink;
+  }
+
+  return "";
+}
+
+async function parseRows(fileName: string, fileBytes: ArrayBuffer): Promise<ContactRow[]> {
   if (fileName.toLowerCase().endsWith(".csv")) {
-    const parsed = Papa.parse<ContactRow>(text, {
+    const parsed = Papa.parse<ContactRow>(Buffer.from(fileBytes).toString("utf8"), {
       header: true,
       skipEmptyLines: true,
     });
@@ -34,9 +70,42 @@ function parseRows(fileName: string, text: string): ContactRow[] {
     return parsed.data;
   }
 
-  const workbook = XLSX.read(text, { type: "binary" });
-  const firstSheet = workbook.SheetNames[0];
-  return XLSX.utils.sheet_to_json<ContactRow>(workbook.Sheets[firstSheet]);
+  const workbook = new ExcelJS.Workbook();
+  await workbook.xlsx.load(fileBytes);
+
+  const worksheet = workbook.worksheets[0];
+  if (!worksheet) {
+    return [];
+  }
+
+  const headers: string[] = [];
+  worksheet.getRow(1).eachCell({ includeEmpty: false }, (cell, colNumber) => {
+    headers[colNumber - 1] = normalizeText(cellToText(cell.value));
+  });
+
+  const rows: ContactRow[] = [];
+
+  for (let rowIndex = 2; rowIndex <= worksheet.rowCount; rowIndex += 1) {
+    const row = worksheet.getRow(rowIndex);
+    const item: ContactRow = {};
+
+    headers.forEach((header, index) => {
+      if (!header) {
+        return;
+      }
+
+      const value = normalizeText(cellToText(row.getCell(index + 1).value));
+      if (value) {
+        item[header] = value;
+      }
+    });
+
+    if (Object.keys(item).length > 0) {
+      rows.push(item);
+    }
+  }
+
+  return rows;
 }
 
 export async function POST(request: Request) {
@@ -48,8 +117,8 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "File is required" }, { status: 400 });
   }
 
-  const buffer = Buffer.from(await file.arrayBuffer());
-  const rows = parseRows(file.name, buffer.toString("binary"));
+  const fileBytes = await file.arrayBuffer();
+  const rows = await parseRows(file.name, fileBytes);
 
   const importedIds: string[] = [];
 

@@ -8,8 +8,15 @@ import {
   hashContactEmail,
   isEncryptedText,
 } from "@/lib/contactSecurity";
+import { requireAdminIdentity } from "@/lib/routeAuth";
+import { writeAuditLog } from "@/lib/auditLog";
 
 export async function POST() {
+  const admin = await requireAdminIdentity();
+  if (admin.error) {
+    return admin.error;
+  }
+
   const contacts = await prisma.contact.findMany({
     select: {
       id: true,
@@ -75,6 +82,18 @@ export async function POST() {
 
     updatedRecipients += 1;
   }
+
+  await writeAuditLog({
+    actorUserId: admin.identity.appUserId,
+    actorUsername: admin.identity.username,
+    action: "contacts_rekey",
+    targetType: "contacts",
+    targetId: null,
+    metadata: {
+      updatedContacts,
+      updatedRecipients,
+    },
+  });
 
   return NextResponse.json({
     updatedContacts,
