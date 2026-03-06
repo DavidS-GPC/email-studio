@@ -11,16 +11,16 @@
     "test:integration:quick": "vitest run --config vitest.config.ts tests/integration"
   },
   "dependencies": {
-    "@prisma/client": "^7.4.2",
+    "@prisma/client": "^6.16.1",
     "exceljs": "^4.4.0",
     "grapesjs": "^0.22.14",
     "grapesjs-preset-newsletter": "^1.0.2",
     "next": "16.1.6",
     "next-auth": "^4.24.13",
     "papaparse": "^5.5.3",
-    "prisma": "^7.4.2",
-    "react": "19.2.4",
-    "react-dom": "19.2.4",
+    "prisma": "^6.16.1",
+    "react": "19.2.3",
+    "react-dom": "19.2.3",
     "resend": "^6.9.2"
   },
   "devDependencies": {
