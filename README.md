@@ -84,6 +84,35 @@ When deploying behind Portainer/reverse proxies with a custom domain, set both `
 3. **Campaigns tab**: choose group + template, add attachments (file or URL), save campaign.
 4. Click **Send now** to dispatch through Resend and log success/failure for each contact.
 
+## Integration regression tests
+
+Use these tests after dependency upgrades to quickly validate core app behavior.
+
+Covered flows:
+
+- Template create, update, delete
+- Contact create, update, bulk import (CSV), delete
+- Group create, member add, delete with member move-to-default fallback
+- Campaign send path with a mocked Resend client (no external API call)
+
+Run full regression setup and tests (recommended):
+
+```bash
+npm run test:integration
+```
+
+This command:
+
+- Creates a fresh isolated SQLite test DB (`prisma/test-integration.db`)
+- Applies all Prisma migrations
+- Runs Vitest integration tests
+
+Run tests only (assumes DB is already prepared):
+
+```bash
+npm run test:integration:quick
+```
+
 ## Notes
 
 - The app auto-creates default modern templates the first time templates are loaded.
