@@ -47,3 +47,4 @@ dev.db
 prisma/dev.db
 prisma/test-integration.db
 public/uploads
+prisma/prisma/
