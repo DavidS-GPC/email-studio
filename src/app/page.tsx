@@ -74,6 +74,7 @@ type AppSettings = {
 };
 
 const tabs = ["Contacts", "Groups", "Templates", "Campaigns"] as const;
+const NEW_TEMPLATE_HTML = "<section><h1>Build your campaign</h1><p>Drag and drop blocks here.</p></section>";
 
 async function readApiJson<T>(response: Response, endpoint: string): Promise<T> {
   const raw = await response.text();
@@ -114,8 +115,10 @@ export default function Home() {
   const [templateName, setTemplateName] = useState("");
   const [templateDescription, setTemplateDescription] = useState("");
   const [templateSubject, setTemplateSubject] = useState("");
-  const [templateHtml, setTemplateHtml] = useState("<section><h1>Build your campaign</h1><p>Drag and drop blocks here.</p></section>");
+  const [templateHtml, setTemplateHtml] = useState(NEW_TEMPLATE_HTML);
   const [templateDesignJson, setTemplateDesignJson] = useState("");
+  const [isNewTemplateModalOpen, setIsNewTemplateModalOpen] = useState(false);
+  const [newTemplateName, setNewTemplateName] = useState("");
   const [isCopyTemplateModalOpen, setIsCopyTemplateModalOpen] = useState(false);
   const [copyTemplateName, setCopyTemplateName] = useState("");
   const [builderEditor, setBuilderEditor] = useState<Editor | null>(null);
@@ -247,6 +250,11 @@ export default function Home() {
     setTemplateDesignJson(template.designJson || "");
   }, []);
 
+  const onStartNewTemplate = useCallback(() => {
+    setNewTemplateName("New template");
+    setIsNewTemplateModalOpen(true);
+  }, []);
+
   const refreshAll = useCallback(async () => {
     await fetch("/api/campaigns/process-due", {
       method: "POST",
@@ -281,7 +289,7 @@ export default function Home() {
       setTemplateName("");
       setTemplateDescription("");
       setTemplateSubject("");
-      setTemplateHtml("<section><h1>Build your campaign</h1><p>Drag and drop blocks here.</p></section>");
+      setTemplateHtml(NEW_TEMPLATE_HTML);
       setTemplateDesignJson("");
     } else if (!selectedTemplateId || !selectedStillExists) {
       loadTemplate(templateData[0]);
@@ -705,6 +713,43 @@ export default function Home() {
     setStatus("Template copied");
     setIsCopyTemplateModalOpen(false);
     setCopyTemplateName("");
+    await refreshAll();
+
+    if (createdTemplate?.id) {
+      loadTemplate(createdTemplate);
+    }
+  }
+
+  async function onConfirmCreateTemplate(event: React.FormEvent) {
+    event.preventDefault();
+
+    const nextName = newTemplateName.trim();
+    if (!nextName) {
+      return;
+    }
+
+    const response = await fetch("/api/templates", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        name: nextName,
+        description: "",
+        subject: "",
+        html: NEW_TEMPLATE_HTML,
+        designJson: "",
+      }),
+    });
+
+    if (!response.ok) {
+      const raw = await response.text();
+      setStatus(`Template create failed: ${raw || response.status}`);
+      return;
+    }
+
+    const createdTemplate = await response.json();
+    setIsNewTemplateModalOpen(false);
+    setNewTemplateName("");
+    setStatus("Template created");
     await refreshAll();
 
     if (createdTemplate?.id) {
@@ -1324,6 +1369,18 @@ export default function Home() {
                     <div className="text-xs text-slate-500">{template.subject}</div>
                   </button>
                 ))}
+                <button
+                  type="button"
+                  onClick={onStartNewTemplate}
+                  className={`w-full rounded-xl border px-3 py-2 text-left text-sm transition ${
+                    selectedTemplateId
+                      ? "border-slate-200 bg-white hover:border-blue-200 hover:bg-slate-50"
+                      : "border-blue-400 bg-blue-50/70 shadow-sm"
+                  }`}
+                >
+                  <div className="font-medium">+ New template</div>
+                  <div className="text-xs text-slate-500">Create a new template draft</div>
+                </button>
               </div>
             </aside>
 
@@ -1949,6 +2006,41 @@ export default function Home() {
                   </button>
                   <button type="submit" className="primary-btn" disabled={!copyTemplateName.trim()}>
                     Create copy
+                  </button>
+                </div>
+              </form>
+            </div>
+          </div>
+        )}
+
+        {isNewTemplateModalOpen && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 p-4">
+            <div className="glass-panel w-full max-w-md rounded-2xl p-5 md:p-6">
+              <h3 className="panel-title text-lg">Create template</h3>
+              <p className="mt-2 text-sm subtle-text">Enter a name for the new blank template.</p>
+
+              <form onSubmit={onConfirmCreateTemplate} className="mt-4 space-y-3">
+                <input
+                  autoFocus
+                  value={newTemplateName}
+                  onChange={(event) => setNewTemplateName(event.target.value)}
+                  placeholder="Template name"
+                  className="field"
+                />
+
+                <div className="flex items-center justify-end gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsNewTemplateModalOpen(false);
+                      setNewTemplateName("");
+                    }}
+                    className="secondary-btn"
+                  >
+                    Cancel
+                  </button>
+                  <button type="submit" className="primary-btn" disabled={!newTemplateName.trim()}>
+                    Create template
                   </button>
                 </div>
               </form>
