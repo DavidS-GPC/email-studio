@@ -7,6 +7,7 @@ export default defineConfig({
     globals: true,
     setupFiles: ["tests/integration/setup.ts"],
     include: ["tests/integration/**/*.test.ts"],
+    fileParallelism: false,
     sequence: {
       concurrent: false,
     },

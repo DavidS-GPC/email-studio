@@ -145,6 +145,47 @@ function registerQuickBlocks(editor: Editor) {
     `,
   });
 
+  blockManager.add("quick-data-table", {
+    label: previewLabel(
+      "Data table",
+      `
+        <div style="height:100%;background:#f8fafc;padding:6px;box-sizing:border-box;display:grid;gap:3px;">
+          <div style="height:7px;background:#1e293b;border-radius:4px;"></div>
+          <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:3px;">
+            <div style="height:6px;background:#cbd5e1;border-radius:3px;"></div>
+            <div style="height:6px;background:#cbd5e1;border-radius:3px;"></div>
+            <div style="height:6px;background:#cbd5e1;border-radius:3px;"></div>
+          </div>
+          <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:3px;">
+            <div style="height:6px;background:#e2e8f0;border-radius:3px;"></div>
+            <div style="height:6px;background:#e2e8f0;border-radius:3px;"></div>
+            <div style="height:6px;background:#e2e8f0;border-radius:3px;"></div>
+          </div>
+        </div>
+      `,
+    ),
+    category,
+    content: `
+      <table width="100%" cellpadding="0" cellspacing="0" style="margin-top:12px;border-collapse:collapse;border:1px solid #cbd5e1;">
+        <tr>
+          <th align="left" style="padding:10px;border:1px solid #cbd5e1;background:#f1f5f9;font-size:14px;">Column 1</th>
+          <th align="left" style="padding:10px;border:1px solid #cbd5e1;background:#f1f5f9;font-size:14px;">Column 2</th>
+          <th align="left" style="padding:10px;border:1px solid #cbd5e1;background:#f1f5f9;font-size:14px;">Column 3</th>
+        </tr>
+        <tr>
+          <td style="padding:10px;border:1px solid #cbd5e1;font-size:14px;">Value</td>
+          <td style="padding:10px;border:1px solid #cbd5e1;font-size:14px;">Value</td>
+          <td style="padding:10px;border:1px solid #cbd5e1;font-size:14px;">Value</td>
+        </tr>
+        <tr>
+          <td style="padding:10px;border:1px solid #cbd5e1;font-size:14px;">Value</td>
+          <td style="padding:10px;border:1px solid #cbd5e1;font-size:14px;">Value</td>
+          <td style="padding:10px;border:1px solid #cbd5e1;font-size:14px;">Value</td>
+        </tr>
+      </table>
+    `,
+  });
+
   blockManager.add("quick-disclaimer", {
     label: previewLabel(
       "No-reply footer",
@@ -305,6 +346,179 @@ export default function EmailBuilder({ initialHtml, initialDesignJson, onChange,
       // Non-blocking: static quick blocks remain available even if image listing fails.
     });
 
+    const openEditableCodeModal = () => {
+        const modal = editor.Modal;
+        const wrapper = document.createElement("div");
+        wrapper.style.display = "grid";
+        wrapper.style.gap = "12px";
+
+        const textarea = document.createElement("textarea");
+        textarea.value = `${editor.getHtml()}<style>${editor.getCss()}</style>`;
+        textarea.style.width = "100%";
+        textarea.style.minHeight = "420px";
+        textarea.style.resize = "vertical";
+        textarea.style.padding = "10px";
+        textarea.style.fontFamily = "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, Courier New, monospace";
+        textarea.style.fontSize = "13px";
+        textarea.style.lineHeight = "1.5";
+        textarea.style.border = "1px solid #cbd5e1";
+        textarea.style.borderRadius = "8px";
+
+        const buttonRow = document.createElement("div");
+        buttonRow.style.display = "flex";
+        buttonRow.style.justifyContent = "flex-end";
+        buttonRow.style.gap = "8px";
+
+        const cancelButton = document.createElement("button");
+        cancelButton.type = "button";
+        cancelButton.textContent = "Cancel";
+        cancelButton.style.padding = "8px 14px";
+        cancelButton.style.border = "1px solid #cbd5e1";
+        cancelButton.style.borderRadius = "8px";
+        cancelButton.style.background = "#ffffff";
+        cancelButton.style.cursor = "pointer";
+        cancelButton.addEventListener("click", () => modal.close());
+
+        const applyButton = document.createElement("button");
+        applyButton.type = "button";
+        applyButton.textContent = "Apply HTML";
+        applyButton.style.padding = "8px 14px";
+        applyButton.style.border = "1px solid #1d4ed8";
+        applyButton.style.borderRadius = "8px";
+        applyButton.style.background = "#2563eb";
+        applyButton.style.color = "#ffffff";
+        applyButton.style.cursor = "pointer";
+        applyButton.addEventListener("click", () => {
+          const fallbackHtml = "<section><h1>New Template</h1><p>Start designing...</p></section>";
+          const parsed = splitHtmlAndCss(textarea.value || fallbackHtml);
+
+          isApplyingExternalRef.current = true;
+          if (releaseApplyTimerRef.current) {
+            window.clearTimeout(releaseApplyTimerRef.current);
+          }
+
+          editor.Css.clear();
+          editor.setComponents(parsed.html || fallbackHtml);
+          editor.setStyle(parsed.css || "");
+
+          const fullHtml = `${editor.getHtml()}<style>${editor.getCss()}</style>`;
+          lastEmittedHtmlRef.current = fullHtml;
+          onChangeRef.current(fullHtml, JSON.stringify(editor.getProjectData()));
+
+          releaseApplyTimerRef.current = window.setTimeout(() => {
+            isApplyingExternalRef.current = false;
+            releaseApplyTimerRef.current = null;
+          }, 160);
+
+          modal.close();
+        });
+
+        buttonRow.appendChild(cancelButton);
+        buttonRow.appendChild(applyButton);
+        wrapper.appendChild(textarea);
+        wrapper.appendChild(buttonRow);
+
+        modal.setTitle("Edit HTML");
+        modal.setContent(wrapper);
+        modal.open();
+    };
+
+    editor.Commands.add("custom:open-editable-code", {
+      run: openEditableCodeModal,
+    });
+
+    editor.Commands.add("core:open-code", {
+      run: openEditableCodeModal,
+    });
+
+    editor.Commands.add("gjs-open-export-template", {
+      run: openEditableCodeModal,
+    });
+
+    editor.Commands.add("gjs-open-import-template", {
+      run: openEditableCodeModal,
+    });
+
+    const installEditableCodeButton = () => {
+      const panelsApi = editor.Panels as unknown as {
+        getPanels?: () => {
+          forEach: (callback: (panel: {
+            get?: (key: string) => unknown;
+          }) => void) => void;
+        };
+        getPanel?: (id: string) => unknown;
+        addButton?: (panelId: string, button: Record<string, unknown>) => void;
+        removeButton?: (panelId: string, buttonId: string) => void;
+      };
+
+      const staleButtonMarkers = ["open-code", "export-template", "import-template", "gjs-open-export-template"];
+      const panelCollection = panelsApi.getPanels?.();
+
+      panelCollection?.forEach((panel) => {
+        if (!panel) {
+          return;
+        }
+
+        const panelId = String(panel.get?.("id") || "");
+        const buttonCollection = panel.get?.("buttons") as
+          | {
+              forEach: (callback: (button: {
+                get?: (key: string) => unknown;
+                getId?: () => string;
+              }) => void) => void;
+            }
+          | undefined;
+
+        if (!panelId || !buttonCollection) {
+          return;
+        }
+
+        buttonCollection.forEach((button) => {
+          if (!button) {
+            return;
+          }
+
+          const id = String(button.getId?.() || button.get?.("id") || "").toLowerCase();
+          const command = button.get?.("command");
+          const commandText = typeof command === "string" ? command.toLowerCase() : "";
+          const attributes = (button.get?.("attributes") || {}) as { title?: string };
+          const title = String(attributes.title || "").toLowerCase();
+
+          const shouldRemoveBuiltInButton =
+            staleButtonMarkers.some((marker) => id.includes(marker) || commandText.includes(marker)) ||
+            title.includes("export template") ||
+            title === "view code";
+
+          if (shouldRemoveBuiltInButton && id) {
+            panelsApi.removeButton?.(panelId, id);
+          }
+        });
+      });
+
+      const buttonConfig = {
+        id: "custom-edit-html",
+        className: "fa fa-code",
+        attributes: { title: "Edit HTML" },
+        command: "custom:open-editable-code",
+      };
+
+      const preferredPanels = ["options", "views"];
+      let installed = false;
+
+      preferredPanels.forEach((panelId) => {
+        if (installed || !panelsApi.getPanel?.(panelId)) {
+          return;
+        }
+
+        panelsApi.removeButton?.(panelId, "custom-edit-html");
+        panelsApi.addButton?.(panelId, buttonConfig);
+        installed = true;
+      });
+    };
+
+    installEditableCodeButton();
+    editor.on("load", installEditableCodeButton);
+
     editorRef.current = editor;
     setExternalComponents(editor, initialHtmlRef.current, initialDesignJsonRef.current);
 
@@ -388,10 +602,51 @@ export default function EmailBuilder({ initialHtml, initialDesignJson, onChange,
       });
     };
 
+    const onOpenCodeShortcut = (event: KeyboardEvent) => {
+      if (!(event.ctrlKey || event.metaKey) || !event.shiftKey || event.key.toLowerCase() !== "e") {
+        return;
+      }
+
+      const target = event.target as HTMLElement | null;
+      const targetTag = target?.tagName?.toLowerCase();
+      const isTypingTarget =
+        target?.isContentEditable || targetTag === "input" || targetTag === "textarea" || targetTag === "select";
+
+      if (isTypingTarget) {
+        return;
+      }
+
+      event.preventDefault();
+      editor.runCommand("custom:open-editable-code");
+    };
+
+    let canvasWindow: Window | null = null;
+    const bindCanvasShortcut = () => {
+      const frameEl = editor.Canvas.getFrameEl();
+      const nextCanvasWindow = frameEl?.contentWindow || null;
+
+      if (canvasWindow && canvasWindow !== nextCanvasWindow) {
+        canvasWindow.removeEventListener("keydown", onOpenCodeShortcut);
+      }
+
+      if (nextCanvasWindow && canvasWindow !== nextCanvasWindow) {
+        nextCanvasWindow.addEventListener("keydown", onOpenCodeShortcut);
+      }
+
+      canvasWindow = nextCanvasWindow;
+    };
+
     window.addEventListener("brand-assets-updated", onBrandAssetUpdate);
+    window.addEventListener("keydown", onOpenCodeShortcut);
+    bindCanvasShortcut();
+    editor.on("canvas:frame:load", bindCanvasShortcut);
 
     return () => {
       window.removeEventListener("brand-assets-updated", onBrandAssetUpdate);
+      window.removeEventListener("keydown", onOpenCodeShortcut);
+      if (canvasWindow) {
+        canvasWindow.removeEventListener("keydown", onOpenCodeShortcut);
+      }
       if (releaseApplyTimerRef.current) {
         window.clearTimeout(releaseApplyTimerRef.current);
       }
