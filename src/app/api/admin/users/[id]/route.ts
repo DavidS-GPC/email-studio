@@ -1,4 +1,4 @@
-import { Prisma } from "@prisma/client";
+import { PrismaClientKnownRequestError } from "@prisma/client/runtime/library";
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { hashPassword } from "@/lib/passwords";
@@ -79,7 +79,7 @@ export async function PATCH(request: Request, { params }: Params) {
 
     return NextResponse.json(updated);
   } catch (error) {
-    if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") {
+    if (error instanceof PrismaClientKnownRequestError && error.code === "P2002") {
       return NextResponse.json({ error: "Username or email already exists" }, { status: 409 });
     }
 

@@ -77,9 +77,9 @@ export async function GET() {
     orderBy: { createdAt: "desc" },
   });
 
-  const payload = campaigns.map((campaign) => ({
+  const payload = campaigns.map((campaign: (typeof campaigns)[number]) => ({
     ...campaign,
-    recipients: campaign.recipients.map((recipient) => ({
+    recipients: campaign.recipients.map((recipient: (typeof campaign.recipients)[number]) => ({
       ...recipient,
       email: decryptText(recipient.email),
     })),

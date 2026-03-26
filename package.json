@@ -8,17 +8,17 @@
     "start": "next start -p 3200",
     "lint": "eslint",
     "test:integration": "node scripts/run-integration-tests.mjs",
-    "test:integration:quick": "vitest run --config vitest.config.ts tests/integration"
+    "test:integration:quick": "node scripts/run-integration-tests.mjs"
   },
   "dependencies": {
-    "@prisma/client": "^7.5.0",
+    "@prisma/client": "^6.16.1",
     "exceljs": "^4.4.0",
     "grapesjs": "^0.22.14",
     "grapesjs-preset-newsletter": "^1.0.2",
     "next": "16.2.1",
     "next-auth": "^4.24.13",
     "papaparse": "^5.5.3",
-    "prisma": "^7.5.0",
+    "prisma": "^6.16.1",
     "react": "19.2.4",
     "react-dom": "19.2.4",
     "resend": "^6.9.2"
@@ -29,7 +29,7 @@
     "@types/papaparse": "^5.5.2",
     "@types/react": "^19",
     "@types/react-dom": "^19",
-    "eslint": "^10",
+    "eslint": "^9",
     "eslint-config-next": "16.2.1",
     "tailwindcss": "^4",
     "typescript": "^5",
