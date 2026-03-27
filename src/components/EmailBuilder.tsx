@@ -118,11 +118,13 @@ function parseTableInspectorState(tableEl: HTMLTableElement): TableInspectorStat
     tableEl.querySelectorAll("tr").length || MIN_TABLE_DIMENSION,
   );
   const firstRow = tableEl.querySelector("tr");
-  const firstRowCells = firstRow ? Array.from(firstRow.querySelectorAll("th,td")) : [];
+  const firstRowCells = firstRow
+    ? Array.from(firstRow.querySelectorAll<HTMLTableCellElement>("th,td"))
+    : [];
   const columns = Math.max(MIN_TABLE_DIMENSION, firstRowCells.length || MIN_TABLE_DIMENSION);
 
   const colGroup = tableEl.querySelector("colgroup");
-  const colWidths = Array.from(colGroup?.querySelectorAll("col") || [])
+  const colWidths = Array.from(colGroup?.querySelectorAll<HTMLTableColElement>("col") || [])
     .slice(0, columns)
     .map((col) => {
       const styleWidth = Number.parseFloat(col.style.width || "");
@@ -889,7 +891,7 @@ export default function EmailBuilder({ initialHtml, initialDesignJson, onChange,
       }
 
       enableTextEditForTableCell(targetComponent);
-      editor.select(targetComponent);
+      (editor as unknown as { select: (component: unknown) => void }).select(targetComponent);
 
       const targetElement = targetComponent.getEl?.();
       if (!(targetElement instanceof HTMLElement)) {
@@ -1051,7 +1053,7 @@ export default function EmailBuilder({ initialHtml, initialDesignJson, onChange,
         return;
       }
 
-      const firstRowCells = Array.from(firstRow.querySelectorAll("th,td"));
+      const firstRowCells = Array.from(firstRow.querySelectorAll<HTMLTableCellElement>("th,td"));
       const columns = firstRowCells.length;
       if (!columns) {
         return;
@@ -1065,12 +1067,12 @@ export default function EmailBuilder({ initialHtml, initialDesignJson, onChange,
         tableEl.insertBefore(colgroup, tableEl.firstChild);
       }
 
-      const existingCols = Array.from(colgroup.querySelectorAll("col"));
+      const existingCols = Array.from(colgroup.querySelectorAll<HTMLTableColElement>("col"));
       if (existingCols.length !== columns) {
         colgroup.innerHTML = Array.from({ length: columns }, () => "<col />").join("");
       }
 
-      const cols = Array.from(colgroup.querySelectorAll("col"));
+      const cols = Array.from(colgroup.querySelectorAll<HTMLTableColElement>("col"));
       cols.forEach((col, index) => {
         const widthValue = Number(normalized[index].toFixed(2));
         const widthText = `${widthValue}%`;
@@ -1091,7 +1093,7 @@ export default function EmailBuilder({ initialHtml, initialDesignJson, onChange,
 
       const rows = Array.from(tableEl.querySelectorAll("tr"));
       rows.forEach((row) => {
-        const rowCells = Array.from(row.querySelectorAll("th,td"));
+        const rowCells = Array.from(row.querySelectorAll<HTMLTableCellElement>("th,td"));
         rowCells.forEach((cell, index) => {
           const widthValue = Number(normalized[index].toFixed(2));
           const widthText = `${widthValue}%`;
