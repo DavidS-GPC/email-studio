@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import grapesjs, { Editor } from "grapesjs";
 import presetNewsletter from "grapesjs-preset-newsletter";
 import "grapesjs/dist/css/grapes.min.css";
@@ -26,6 +26,188 @@ type StoredUploadImage = {
   url: string;
   createdAt: string;
 };
+
+type TableInspectorState = {
+  rows: number;
+  columns: number;
+  widths: number[];
+};
+
+type ColumnDragState = {
+  tableComponent: BuilderComponent;
+  columnIndex: number;
+  startX: number;
+  tableWidthPx: number;
+  startWidths: number[];
+  latestWidths: number[];
+  moveCount: number;
+};
+
+const MIN_TABLE_DIMENSION = 1;
+const MAX_TABLE_DIMENSION = 20;
+const COLUMN_HANDLE_WIDTH_PX = 10;
+
+function parseDimension(value: number, fallback: number) {
+  if (!Number.isFinite(value)) {
+    return fallback;
+  }
+
+  return Math.min(MAX_TABLE_DIMENSION, Math.max(MIN_TABLE_DIMENSION, Math.round(value)));
+}
+
+function normalizeTableWidths(columnCount: number, widths: number[]) {
+  if (columnCount <= 0) {
+    return [];
+  }
+
+  if (!widths.length) {
+    return Array.from({ length: columnCount }, () => Number((100 / columnCount).toFixed(2)));
+  }
+
+  const padded = Array.from({ length: columnCount }, (_, index) => {
+    const next = widths[index];
+    return Number.isFinite(next) && next > 0 ? next : 0;
+  });
+
+  const providedTotal = padded.reduce((sum, part) => sum + part, 0);
+  if (providedTotal <= 0) {
+    return Array.from({ length: columnCount }, () => Number((100 / columnCount).toFixed(2)));
+  }
+
+  return padded.map((part) => Number(((part / providedTotal) * 100).toFixed(2)));
+}
+
+function normalizeEditableTableStyle(styleText: string | undefined) {
+  const styleMap = new Map<string, string>();
+
+  (styleText || "")
+    .split(";")
+    .map((entry) => entry.trim())
+    .filter(Boolean)
+    .forEach((entry) => {
+      const separatorIndex = entry.indexOf(":");
+      if (separatorIndex <= 0) {
+        return;
+      }
+
+      const key = entry.slice(0, separatorIndex).trim().toLowerCase();
+      const value = entry.slice(separatorIndex + 1).trim();
+      if (!key || !value) {
+        return;
+      }
+
+      styleMap.set(key, value);
+    });
+
+  styleMap.set("table-layout", "fixed");
+  styleMap.set("width", "100%");
+
+  return Array.from(styleMap.entries())
+    .map(([key, value]) => `${key}:${value}`)
+    .join(";");
+}
+
+function scaleWidthsToPixels(widths: number[], totalPixels: number) {
+  const normalized = normalizeTableWidths(widths.length, widths);
+  return normalized.map((part) => (part / 100) * totalPixels);
+}
+
+function parseTableInspectorState(tableEl: HTMLTableElement): TableInspectorState {
+  const rows = Math.max(
+    MIN_TABLE_DIMENSION,
+    tableEl.querySelectorAll("tr").length || MIN_TABLE_DIMENSION,
+  );
+  const firstRow = tableEl.querySelector("tr");
+  const firstRowCells = firstRow ? Array.from(firstRow.querySelectorAll("th,td")) : [];
+  const columns = Math.max(MIN_TABLE_DIMENSION, firstRowCells.length || MIN_TABLE_DIMENSION);
+
+  const colGroup = tableEl.querySelector("colgroup");
+  const colWidths = Array.from(colGroup?.querySelectorAll("col") || [])
+    .slice(0, columns)
+    .map((col) => {
+      const styleWidth = Number.parseFloat(col.style.width || "");
+      if (Number.isFinite(styleWidth) && styleWidth > 0) {
+        return styleWidth;
+      }
+
+      const attrWidth = Number.parseFloat(col.getAttribute("width") || "");
+      if (Number.isFinite(attrWidth) && attrWidth > 0) {
+        return attrWidth;
+      }
+
+      const rectWidth = col.getBoundingClientRect().width;
+      return Number.isFinite(rectWidth) && rectWidth > 0 ? rectWidth : 0;
+    });
+
+  if (colWidths.length === columns && colWidths.some((value) => value > 0)) {
+    return {
+      rows,
+      columns,
+      widths: normalizeTableWidths(columns, colWidths),
+    };
+  }
+
+  const widths = normalizeTableWidths(
+    columns,
+    firstRowCells.map((cell) => {
+      const attrWidth = Number.parseFloat(cell.getAttribute("width") || "");
+      if (Number.isFinite(attrWidth) && attrWidth > 0) {
+        return attrWidth;
+      }
+
+      const cssWidth = Number.parseFloat(cell.style.width || "");
+      if (Number.isFinite(cssWidth) && cssWidth > 0) {
+        return cssWidth;
+      }
+
+      const rectWidth = cell.getBoundingClientRect().width;
+      return Number.isFinite(rectWidth) && rectWidth > 0 ? rectWidth : 0;
+    }),
+  );
+
+  return { rows, columns, widths };
+}
+
+function extractTableMatrix(tableEl: HTMLTableElement): string[][] {
+  return Array.from(tableEl.querySelectorAll("tr")).map((row) =>
+    Array.from(row.querySelectorAll("th,td")).map((cell) => (cell.innerHTML || "").trim()),
+  );
+}
+
+function buildEditableTableInner(
+  rows: number,
+  columns: number,
+  matrix: string[][],
+  widthParts: number[],
+) {
+  const widths = normalizeTableWidths(columns, widthParts);
+
+  const colGroup = `<colgroup>${widths
+    .map((width) => `<col style="width:${width}%;" />`)
+    .join("")}</colgroup>`;
+
+  const bodyRows = Array.from({ length: rows }, (_, rowIndex) => {
+    const isHeader = rowIndex === 0;
+    const tag = isHeader ? "th" : "td";
+    const cellStyles = isHeader
+      ? "padding:10px;border:1px solid #cbd5e1;background:#f1f5f9;font-size:14px;"
+      : "padding:10px;border:1px solid #cbd5e1;font-size:14px;";
+
+    const cells = Array.from({ length: columns }, (_, columnIndex) => {
+      const existingValue = matrix[rowIndex]?.[columnIndex];
+      const fallbackValue = isHeader ? `Column ${columnIndex + 1}` : "Value";
+      const value = existingValue && existingValue.length ? existingValue : fallbackValue;
+      const widthValue = Number(widths[columnIndex].toFixed(2));
+      const fullCellStyle = `${cellStyles}width:${widthValue}%;`;
+
+      return `<${tag} align="left" width="${widthValue}%" style="${fullCellStyle}">${value}</${tag}>`;
+    }).join("");
+
+    return `<tr>${cells}</tr>`;
+  }).join("");
+
+  return `${colGroup}<tbody>${bodyRows}</tbody>`;
+}
 
 function splitHtmlAndCss(source: string) {
   const styleRegex = /<style[^>]*>([\s\S]*?)<\/style>/gi;
@@ -166,22 +348,29 @@ function registerQuickBlocks(editor: Editor) {
     ),
     category,
     content: `
-      <table width="100%" cellpadding="0" cellspacing="0" style="margin-top:12px;border-collapse:collapse;border:1px solid #cbd5e1;">
-        <tr>
-          <th align="left" style="padding:10px;border:1px solid #cbd5e1;background:#f1f5f9;font-size:14px;">Column 1</th>
-          <th align="left" style="padding:10px;border:1px solid #cbd5e1;background:#f1f5f9;font-size:14px;">Column 2</th>
-          <th align="left" style="padding:10px;border:1px solid #cbd5e1;background:#f1f5f9;font-size:14px;">Column 3</th>
-        </tr>
-        <tr>
-          <td style="padding:10px;border:1px solid #cbd5e1;font-size:14px;">Value</td>
-          <td style="padding:10px;border:1px solid #cbd5e1;font-size:14px;">Value</td>
-          <td style="padding:10px;border:1px solid #cbd5e1;font-size:14px;">Value</td>
-        </tr>
-        <tr>
-          <td style="padding:10px;border:1px solid #cbd5e1;font-size:14px;">Value</td>
-          <td style="padding:10px;border:1px solid #cbd5e1;font-size:14px;">Value</td>
-          <td style="padding:10px;border:1px solid #cbd5e1;font-size:14px;">Value</td>
-        </tr>
+      <table data-editable-table="true" width="100%" cellpadding="0" cellspacing="0" style="margin-top:12px;border-collapse:collapse;border:1px solid #cbd5e1;table-layout:fixed;">
+        <colgroup>
+          <col style="width:33.33%;" />
+          <col style="width:33.33%;" />
+          <col style="width:33.34%;" />
+        </colgroup>
+        <tbody>
+          <tr>
+            <th align="left" width="33.33%" style="padding:10px;border:1px solid #cbd5e1;background:#f1f5f9;font-size:14px;">Column 1</th>
+            <th align="left" width="33.33%" style="padding:10px;border:1px solid #cbd5e1;background:#f1f5f9;font-size:14px;">Column 2</th>
+            <th align="left" width="33.34%" style="padding:10px;border:1px solid #cbd5e1;background:#f1f5f9;font-size:14px;">Column 3</th>
+          </tr>
+          <tr>
+            <td width="33.33%" style="padding:10px;border:1px solid #cbd5e1;font-size:14px;">Value</td>
+            <td width="33.33%" style="padding:10px;border:1px solid #cbd5e1;font-size:14px;">Value</td>
+            <td width="33.34%" style="padding:10px;border:1px solid #cbd5e1;font-size:14px;">Value</td>
+          </tr>
+          <tr>
+            <td width="33.33%" style="padding:10px;border:1px solid #cbd5e1;font-size:14px;">Value</td>
+            <td width="33.33%" style="padding:10px;border:1px solid #cbd5e1;font-size:14px;">Value</td>
+            <td width="33.34%" style="padding:10px;border:1px solid #cbd5e1;font-size:14px;">Value</td>
+          </tr>
+        </tbody>
       </table>
     `,
   });
@@ -272,6 +461,8 @@ export default function EmailBuilder({ initialHtml, initialDesignJson, onChange,
   const onReadyRef = useRef(onReady);
   const initialHtmlRef = useRef(initialHtml);
   const initialDesignJsonRef = useRef(initialDesignJson);
+  const selectedEditableTableRef = useRef<BuilderComponent | null>(null);
+  const [tableInspector, setTableInspector] = useState<TableInspectorState | null>(null);
 
   useEffect(() => {
     onChangeRef.current = onChange;
@@ -325,6 +516,44 @@ export default function EmailBuilder({ initialHtml, initialDesignJson, onChange,
     }, 160);
   }
 
+  const syncInspectorFromTable = (tableComponent: BuilderComponent | null) => {
+    const tableEl = tableComponent?.getEl?.();
+    if (!(tableEl instanceof HTMLTableElement)) {
+      setTableInspector(null);
+      return;
+    }
+
+    setTableInspector(parseTableInspectorState(tableEl));
+  };
+
+  const applyTableLayout = (rows: number, columns: number, widths?: number[]) => {
+    const tableComponent = selectedEditableTableRef.current;
+    if (!tableComponent) {
+      return;
+    }
+
+    const safeRows = parseDimension(rows, 3);
+    const safeColumns = parseDimension(columns, 3);
+    const tableEl = tableComponent.getEl?.();
+    const existingMatrix = tableEl instanceof HTMLTableElement ? extractTableMatrix(tableEl) : [];
+
+    const nextWidths = normalizeTableWidths(safeColumns, widths || tableInspector?.widths || []);
+    const nextInner = buildEditableTableInner(safeRows, safeColumns, existingMatrix, nextWidths);
+    const attributes = (tableComponent.get?.("attributes") as Record<string, unknown> | undefined) || {};
+
+    tableComponent.set?.("attributes", {
+      ...attributes,
+      "data-editable-table": "true",
+      width: "100%",
+      cellpadding: "0",
+      cellspacing: "0",
+      style: normalizeEditableTableStyle(String(attributes.style || "")),
+    });
+    tableComponent.set?.("components", nextInner);
+
+    syncInspectorFromTable(tableComponent);
+  };
+
   useEffect(() => {
     if (!containerRef.current) {
       return;
@@ -345,6 +574,75 @@ export default function EmailBuilder({ initialHtml, initialDesignJson, onChange,
     refreshStoredImageBlocks(editor).catch(() => {
       // Non-blocking: static quick blocks remain available even if image listing fails.
     });
+
+    const getEventElement = (target: EventTarget | null) => {
+      if (target instanceof HTMLElement) {
+        return target;
+      }
+
+      if (target instanceof Node) {
+        return target.parentElement;
+      }
+
+      return null;
+    };
+
+    const applyTableColumnWidths = (tableComponent: BuilderComponent, widths: number[]) => {
+      const tableEl = tableComponent.getEl?.();
+      if (!(tableEl instanceof HTMLTableElement)) {
+        return;
+      }
+
+      const currentState = parseTableInspectorState(tableEl);
+      const normalizedWidths = normalizeTableWidths(currentState.columns, widths);
+
+      // Ensure the live canvas DOM reflects the final widths before syncing back into the model.
+      applyColumnWidthsToDom(tableComponent, normalizedWidths);
+
+      const rowComponents = (tableComponent.find?.("tr") || []) as BuilderComponent[];
+      rowComponents.forEach((rowComponent) => {
+        const cellComponents = (rowComponent.find?.("th,td") || []) as BuilderComponent[];
+        cellComponents.forEach((cellComponent, index) => {
+          if (index >= normalizedWidths.length) {
+            return;
+          }
+
+          const widthText = `${Number(normalizedWidths[index].toFixed(2))}%`;
+          const existingAttributes =
+            (cellComponent.get?.("attributes") as Record<string, unknown> | undefined) || {};
+          cellComponent.set?.("attributes", {
+            ...existingAttributes,
+            width: widthText,
+          });
+        });
+      });
+
+      const colComponents = (tableComponent.find?.("col") || []) as BuilderComponent[];
+      colComponents.forEach((colComponent, index) => {
+        if (index >= normalizedWidths.length) {
+          return;
+        }
+
+        const widthText = `${Number(normalizedWidths[index].toFixed(2))}%`;
+        const existingAttributes =
+          (colComponent.get?.("attributes") as Record<string, unknown> | undefined) || {};
+        colComponent.set?.("attributes", {
+          ...existingAttributes,
+          width: widthText,
+        });
+      });
+
+      const attributes = (tableComponent.get?.("attributes") as Record<string, unknown> | undefined) || {};
+      tableComponent.set?.("attributes", {
+        ...attributes,
+        "data-editable-table": "true",
+        width: "100%",
+        cellpadding: "0",
+        cellspacing: "0",
+        style: normalizeEditableTableStyle(String(attributes.style || "")),
+      });
+      syncInspectorFromTable(tableComponent);
+    };
 
     const openEditableCodeModal = () => {
         const modal = editor.Modal;
@@ -376,6 +674,7 @@ export default function EmailBuilder({ initialHtml, initialDesignJson, onChange,
         cancelButton.style.border = "1px solid #cbd5e1";
         cancelButton.style.borderRadius = "8px";
         cancelButton.style.background = "#ffffff";
+        cancelButton.style.color = "#334155";
         cancelButton.style.cursor = "pointer";
         cancelButton.addEventListener("click", () => modal.close());
 
@@ -532,6 +831,23 @@ export default function EmailBuilder({ initialHtml, initialDesignJson, onChange,
       component?.set?.("editable", true);
       component?.set?.("selectable", true);
       component?.set?.("hoverable", true);
+      component?.set?.("draggable", false);
+      component?.set?.("copyable", true);
+    };
+
+    const resolveEditableTableComponent = (component: BuilderComponent | undefined) => {
+      const ownTagNameValue = component?.get?.("tagName");
+      const ownTagName = typeof ownTagNameValue === "string" ? ownTagNameValue.toLowerCase() : "";
+      if (ownTagName === "table") {
+        return component;
+      }
+
+      const closestTable = component?.closest?.("table") as BuilderComponent | undefined;
+      if (!closestTable) {
+        return undefined;
+      }
+
+      return closestTable;
     };
 
     const resolveTableCellComponent = (component: BuilderComponent | undefined, event?: MouseEvent) => {
@@ -546,8 +862,9 @@ export default function EmailBuilder({ initialHtml, initialDesignJson, onChange,
         return closestCell;
       }
 
-      if (event?.target instanceof HTMLElement) {
-        const cellEl = event.target.closest("td,th");
+      const eventElement = getEventElement(event?.target || null);
+      if (eventElement) {
+        const cellEl = eventElement.closest("td,th");
         if (cellEl) {
           const wrapper = editor.getWrapper();
           const allCells = wrapper?.find?.("td,th") || [];
@@ -566,20 +883,81 @@ export default function EmailBuilder({ initialHtml, initialDesignJson, onChange,
       return undefined;
     };
 
+    const beginCellTextEditing = (targetComponent: BuilderComponent | undefined) => {
+      if (!targetComponent) {
+        return;
+      }
+
+      enableTextEditForTableCell(targetComponent);
+      editor.select(targetComponent);
+
+      const targetElement = targetComponent.getEl?.();
+      if (!(targetElement instanceof HTMLElement)) {
+        return;
+      }
+
+      targetElement.setAttribute("contenteditable", "true");
+      targetElement.focus();
+
+      const selection = targetElement.ownerDocument.getSelection();
+      if (selection) {
+        const range = targetElement.ownerDocument.createRange();
+        range.selectNodeContents(targetElement);
+        range.collapse(false);
+        selection.removeAllRanges();
+        selection.addRange(range);
+      }
+    };
+
     editor.on("component:selected", (component) => {
       const cellComponent = resolveTableCellComponent(component as BuilderComponent);
       if (cellComponent) {
-        enableTextEditForTableCell(cellComponent);
+        window.setTimeout(() => {
+          beginCellTextEditing(cellComponent);
+        }, 0);
+      }
+
+      const tableComponent = resolveEditableTableComponent(component as BuilderComponent);
+      if (tableComponent) {
+        const existingAttributes =
+          (tableComponent.get?.("attributes") as Record<string, unknown> | undefined) || {};
+        tableComponent.set?.("attributes", {
+          ...existingAttributes,
+          "data-editable-table": "true",
+          width: "100%",
+          cellpadding: String(existingAttributes.cellpadding || "0"),
+          cellspacing: String(existingAttributes.cellspacing || "0"),
+          style: normalizeEditableTableStyle(String(existingAttributes.style || "")),
+        });
+
+        selectedEditableTableRef.current = tableComponent;
+        syncInspectorFromTable(tableComponent);
+        window.setTimeout(() => {
+          renderResizeHandles();
+        }, 0);
+      } else {
+        selectedEditableTableRef.current = null;
+        setTableInspector(null);
+        clearResizeHandles();
       }
     });
 
     editor.on("component:dblclick", (component, event?: MouseEvent) => {
       const cellComponent = resolveTableCellComponent(component as BuilderComponent, event);
       const targetComponent = cellComponent || component;
+      beginCellTextEditing(targetComponent as BuilderComponent);
+    });
 
-      enableTextEditForTableCell(targetComponent);
-      editor.select(targetComponent);
-      editor.runCommand("core:component-text-edit", { target: targetComponent });
+    editor.on("component:update", (component) => {
+      const selected = selectedEditableTableRef.current;
+      if (!selected || selected !== (component as BuilderComponent)) {
+        return;
+      }
+
+      syncInspectorFromTable(selected);
+      window.setTimeout(() => {
+        renderResizeHandles();
+      }, 0);
     });
 
     editor.on("update", () => {
@@ -620,20 +998,326 @@ export default function EmailBuilder({ initialHtml, initialDesignJson, onChange,
       editor.runCommand("custom:open-editable-code");
     };
 
+    const columnDragStateRef = { current: null as ColumnDragState | null };
+    const resizeHandlesRef = { current: [] as HTMLDivElement[] };
+
+    const clearCanvasCursor = (doc: Document) => {
+      doc.body.style.cursor = "";
+      doc.body.style.userSelect = "";
+    };
+
+    function clearResizeHandles() {
+      resizeHandlesRef.current.forEach((handle) => handle.remove());
+      resizeHandlesRef.current = [];
+    }
+
+    function startColumnDrag(tableComponent: BuilderComponent, dividerIndex: number, startX: number) {
+      const tableEl = tableComponent.getEl?.();
+      if (!(tableEl instanceof HTMLTableElement)) {
+        return;
+      }
+
+      const currentState = parseTableInspectorState(tableEl);
+      const tableWidthPx = tableEl.getBoundingClientRect().width;
+      if (!Number.isFinite(tableWidthPx) || tableWidthPx <= 0) {
+        return;
+      }
+
+      const normalizedWidths = normalizeTableWidths(currentState.columns, currentState.widths);
+
+      columnDragStateRef.current = {
+        tableComponent,
+        columnIndex: dividerIndex,
+        startX,
+        tableWidthPx,
+        startWidths: normalizedWidths,
+        latestWidths: normalizedWidths,
+        moveCount: 0,
+      };
+
+      const doc = tableEl.ownerDocument;
+      doc.body.style.cursor = "col-resize";
+      doc.body.style.userSelect = "none";
+    }
+
+    function applyColumnWidthsToDom(tableComponent: BuilderComponent, widths: number[]) {
+      const tableEl = tableComponent.getEl?.();
+      if (!(tableEl instanceof HTMLTableElement)) {
+        return;
+      }
+
+      const firstRow = tableEl.querySelector("tr");
+      if (!firstRow) {
+        return;
+      }
+
+      const firstRowCells = Array.from(firstRow.querySelectorAll("th,td"));
+      const columns = firstRowCells.length;
+      if (!columns) {
+        return;
+      }
+
+      const normalized = normalizeTableWidths(columns, widths);
+
+      let colgroup = tableEl.querySelector("colgroup");
+      if (!colgroup) {
+        colgroup = tableEl.ownerDocument.createElement("colgroup");
+        tableEl.insertBefore(colgroup, tableEl.firstChild);
+      }
+
+      const existingCols = Array.from(colgroup.querySelectorAll("col"));
+      if (existingCols.length !== columns) {
+        colgroup.innerHTML = Array.from({ length: columns }, () => "<col />").join("");
+      }
+
+      const cols = Array.from(colgroup.querySelectorAll("col"));
+      cols.forEach((col, index) => {
+        const widthValue = Number(normalized[index].toFixed(2));
+        const widthText = `${widthValue}%`;
+        col.style.setProperty("width", widthText, "important");
+        col.style.setProperty("min-width", widthText, "important");
+        col.style.setProperty("max-width", widthText, "important");
+        col.setAttribute("width", widthText);
+      });
+
+      tableEl.style.setProperty("table-layout", "fixed", "important");
+      tableEl.style.setProperty("width", "100%", "important");
+      if (!tableEl.style.borderCollapse) {
+        tableEl.style.borderCollapse = "collapse";
+      }
+      if (!tableEl.style.border) {
+        tableEl.style.border = "1px solid #cbd5e1";
+      }
+
+      const rows = Array.from(tableEl.querySelectorAll("tr"));
+      rows.forEach((row) => {
+        const rowCells = Array.from(row.querySelectorAll("th,td"));
+        rowCells.forEach((cell, index) => {
+          const widthValue = Number(normalized[index].toFixed(2));
+          const widthText = `${widthValue}%`;
+          cell.style.setProperty("width", widthText, "important");
+          cell.style.setProperty("min-width", widthText, "important");
+          cell.style.setProperty("max-width", widthText, "important");
+
+          // Preserve a visible table grid even if component serialization drops style metadata.
+          if (!cell.style.padding) {
+            cell.style.padding = "10px";
+          }
+          if (!cell.style.border) {
+            cell.style.border = "1px solid #cbd5e1";
+          }
+          if (!cell.style.fontSize) {
+            cell.style.fontSize = "14px";
+          }
+          if (cell.tagName.toLowerCase() === "th" && !cell.style.background) {
+            cell.style.background = "#f1f5f9";
+          }
+
+          cell.setAttribute("width", widthText);
+        });
+      });
+    }
+
+    function calculateDraggedWidths(dragState: ColumnDragState, clientX: number) {
+      // Keep columns usable while still allowing meaningful resizing.
+      const minColumnWidthPx = Math.max(24, dragState.tableWidthPx * 0.08);
+      const deltaPx = clientX - dragState.startX;
+      const startPixels = scaleWidthsToPixels(dragState.startWidths, dragState.tableWidthPx);
+      const leftIndex = dragState.columnIndex;
+      const rightIndex = leftIndex + 1;
+
+      if (rightIndex >= startPixels.length) {
+        return null;
+      }
+
+      const nextPixels = [...startPixels];
+      const combined = startPixels[leftIndex] + startPixels[rightIndex];
+      const nextLeft = Math.min(
+        combined - minColumnWidthPx,
+        Math.max(minColumnWidthPx, startPixels[leftIndex] + deltaPx),
+      );
+      const nextRight = combined - nextLeft;
+
+      nextPixels[leftIndex] = nextLeft;
+      nextPixels[rightIndex] = nextRight;
+
+      return normalizeTableWidths(
+        nextPixels.length,
+        nextPixels.map((pixelWidth) => (pixelWidth / dragState.tableWidthPx) * 100),
+      );
+    }
+
+    function renderResizeHandles() {
+      clearResizeHandles();
+
+      const tableComponent = selectedEditableTableRef.current;
+      const tableEl = tableComponent?.getEl?.();
+      if (!(tableEl instanceof HTMLTableElement)) {
+        return;
+      }
+
+      const firstRow = tableEl.querySelector("tr");
+      if (!firstRow) {
+        return;
+      }
+
+      const cells = Array.from(firstRow.querySelectorAll("th,td"));
+      if (cells.length < 2) {
+        return;
+      }
+
+      const doc = tableEl.ownerDocument;
+      const tableRect = tableEl.getBoundingClientRect();
+      if (tableRect.width <= 0 || tableRect.height <= 0) {
+        return;
+      }
+
+      const handles: HTMLDivElement[] = [];
+      const fragment = doc.createDocumentFragment();
+
+      for (let index = 0; index < cells.length - 1; index += 1) {
+        const boundaryX = cells[index].getBoundingClientRect().right;
+        const handle = doc.createElement("div");
+        handle.setAttribute("data-table-resize-handle", "true");
+        handle.style.position = "fixed";
+        handle.style.left = `${boundaryX - COLUMN_HANDLE_WIDTH_PX / 2}px`;
+        handle.style.top = `${tableRect.top}px`;
+        handle.style.width = `${COLUMN_HANDLE_WIDTH_PX}px`;
+        handle.style.height = `${tableRect.height}px`;
+        handle.style.cursor = "col-resize";
+        handle.style.background = "rgba(37,99,235,0.12)";
+        handle.style.borderLeft = "1px dashed rgba(37,99,235,0.65)";
+        handle.style.borderRight = "1px dashed rgba(37,99,235,0.65)";
+        handle.style.zIndex = "2147483647";
+        handle.style.pointerEvents = "auto";
+
+        handle.addEventListener("pointerdown", (event) => {
+          if (event.button !== 0) {
+            return;
+          }
+
+          event.preventDefault();
+          event.stopPropagation();
+          startColumnDrag(tableComponent as BuilderComponent, index, event.clientX);
+
+          const pointerId = event.pointerId;
+          const ownerDocument = handle.ownerDocument;
+          let dragEnded = false;
+
+          const stopDrag = (endEvent?: PointerEvent) => {
+            if (dragEnded) {
+              return;
+            }
+
+            if (endEvent && endEvent.pointerId !== pointerId) {
+              return;
+            }
+
+            dragEnded = true;
+            ownerDocument.removeEventListener("pointermove", onPointerMove, true);
+            ownerDocument.removeEventListener("pointerup", stopDrag, true);
+            ownerDocument.removeEventListener("pointercancel", stopDrag, true);
+            handle.removeEventListener("lostpointercapture", onLostPointerCapture);
+
+            if (handle.hasPointerCapture(pointerId)) {
+              handle.releasePointerCapture(pointerId);
+            }
+
+            const dragState = columnDragStateRef.current;
+            if (!dragState) {
+              return;
+            }
+
+            const endClientX = endEvent?.clientX;
+            const finalWidths =
+              typeof endClientX === "number"
+                ? calculateDraggedWidths(dragState, endClientX) || dragState.latestWidths
+                : dragState.latestWidths;
+
+            dragState.latestWidths = finalWidths;
+
+            applyTableColumnWidths(dragState.tableComponent, finalWidths);
+            columnDragStateRef.current = null;
+
+            const doc = (tableComponent as BuilderComponent).getEl?.()?.ownerDocument || document;
+            clearCanvasCursor(doc);
+            renderResizeHandles();
+          };
+
+          const onLostPointerCapture = () => {
+            stopDrag();
+          };
+
+          const onPointerMove = (moveEvent: PointerEvent) => {
+            if (moveEvent.pointerId !== pointerId) {
+              return;
+            }
+
+            const dragState = columnDragStateRef.current;
+            if (!dragState) {
+              return;
+            }
+
+            const nextWidths = calculateDraggedWidths(dragState, moveEvent.clientX);
+            if (!nextWidths) {
+              return;
+            }
+
+            dragState.moveCount += 1;
+            dragState.latestWidths = nextWidths;
+            applyColumnWidthsToDom(dragState.tableComponent, nextWidths);
+
+            moveEvent.preventDefault();
+          };
+
+          ownerDocument.addEventListener("pointermove", onPointerMove, true);
+          ownerDocument.addEventListener("pointerup", stopDrag, true);
+          ownerDocument.addEventListener("pointercancel", stopDrag, true);
+          handle.addEventListener("lostpointercapture", onLostPointerCapture);
+
+          if (typeof handle.setPointerCapture === "function") {
+            handle.setPointerCapture(pointerId);
+          }
+        });
+
+        fragment.appendChild(handle);
+        handles.push(handle);
+      }
+
+      doc.body.appendChild(fragment);
+      resizeHandlesRef.current = handles;
+    }
+
     let canvasWindow: Window | null = null;
+    let canvasDocument: Document | null = null;
     const bindCanvasShortcut = () => {
       const frameEl = editor.Canvas.getFrameEl();
       const nextCanvasWindow = frameEl?.contentWindow || null;
+      const nextCanvasDocument = nextCanvasWindow?.document || null;
+
+      if (canvasDocument && canvasDocument !== nextCanvasDocument) {
+        canvasDocument.removeEventListener("scroll", renderResizeHandles, true);
+        clearCanvasCursor(canvasDocument);
+        clearResizeHandles();
+      }
 
       if (canvasWindow && canvasWindow !== nextCanvasWindow) {
         canvasWindow.removeEventListener("keydown", onOpenCodeShortcut);
+        canvasWindow.removeEventListener("resize", renderResizeHandles);
       }
 
       if (nextCanvasWindow && canvasWindow !== nextCanvasWindow) {
         nextCanvasWindow.addEventListener("keydown", onOpenCodeShortcut);
+        nextCanvasWindow.addEventListener("resize", renderResizeHandles);
+      }
+
+      if (nextCanvasDocument && canvasDocument !== nextCanvasDocument) {
+        nextCanvasDocument.addEventListener("scroll", renderResizeHandles, true);
       }
 
       canvasWindow = nextCanvasWindow;
+      canvasDocument = nextCanvasDocument;
+      renderResizeHandles();
     };
 
     window.addEventListener("brand-assets-updated", onBrandAssetUpdate);
@@ -646,6 +1330,12 @@ export default function EmailBuilder({ initialHtml, initialDesignJson, onChange,
       window.removeEventListener("keydown", onOpenCodeShortcut);
       if (canvasWindow) {
         canvasWindow.removeEventListener("keydown", onOpenCodeShortcut);
+        canvasWindow.removeEventListener("resize", renderResizeHandles);
+      }
+      if (canvasDocument) {
+        canvasDocument.removeEventListener("scroll", renderResizeHandles, true);
+        clearCanvasCursor(canvasDocument);
+        clearResizeHandles();
       }
       if (releaseApplyTimerRef.current) {
         window.clearTimeout(releaseApplyTimerRef.current);
@@ -666,5 +1356,68 @@ export default function EmailBuilder({ initialHtml, initialDesignJson, onChange,
     }
   }, [initialHtml, initialDesignJson]);
 
-  return <div ref={containerRef} className="email-builder-shell w-full rounded-xl border border-slate-200" />;
+  return (
+    <div className="space-y-3">
+      <div ref={containerRef} className="email-builder-shell w-full rounded-xl border border-slate-200" />
+      {tableInspector ? (
+        <div className="rounded-xl border border-slate-200 bg-white p-4">
+          <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">Selected Data Table</div>
+          <div className="mt-3 grid gap-3 md:grid-cols-3">
+            <label className="grid gap-1 text-sm text-slate-700">
+              Rows
+              <input
+                type="number"
+                min={MIN_TABLE_DIMENSION}
+                max={MAX_TABLE_DIMENSION}
+                value={tableInspector.rows}
+                onChange={(event) => {
+                  const nextRows = parseDimension(Number(event.target.value), tableInspector.rows);
+                  applyTableLayout(nextRows, tableInspector.columns, tableInspector.widths);
+                }}
+                className="rounded-md border border-slate-300 px-3 py-2"
+              />
+            </label>
+            <label className="grid gap-1 text-sm text-slate-700">
+              Columns
+              <input
+                type="number"
+                min={MIN_TABLE_DIMENSION}
+                max={MAX_TABLE_DIMENSION}
+                value={tableInspector.columns}
+                onChange={(event) => {
+                  const nextColumns = parseDimension(Number(event.target.value), tableInspector.columns);
+                  applyTableLayout(tableInspector.rows, nextColumns, tableInspector.widths);
+                }}
+                className="rounded-md border border-slate-300 px-3 py-2"
+              />
+            </label>
+            <div className="grid gap-1 text-sm text-slate-700">
+              <span>Column Widths (%)</span>
+              <div className="flex flex-wrap gap-2">
+                {tableInspector.widths.map((width, index) => (
+                  <label key={`column-width-${index}`} className="flex items-center gap-1 text-xs text-slate-600">
+                    <span>C{index + 1}</span>
+                    <input
+                      type="number"
+                      min={1}
+                      max={99}
+                      step={1}
+                      value={Number(width.toFixed(2))}
+                      onChange={(event) => {
+                        const nextWidth = Number(event.target.value);
+                        const nextWidths = [...tableInspector.widths];
+                        nextWidths[index] = Number.isFinite(nextWidth) && nextWidth > 0 ? nextWidth : width;
+                        applyTableLayout(tableInspector.rows, tableInspector.columns, nextWidths);
+                      }}
+                      className="w-20 rounded-md border border-slate-300 px-2 py-1"
+                    />
+                  </label>
+                ))}
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : null}
+    </div>
+  );
 }
