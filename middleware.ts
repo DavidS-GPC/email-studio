@@ -6,6 +6,10 @@ function isPublicAssetPath(pathname: string) {
     return true;
   }
 
+  if (pathname.startsWith("/uploads/") || pathname.startsWith("/examples/")) {
+    return true;
+  }
+
   return pathname === "/favicon.ico" || pathname === "/robots.txt" || pathname === "/sitemap.xml";
 }
 

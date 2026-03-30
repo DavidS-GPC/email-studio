@@ -1,11 +1,34 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Editor } from "grapesjs";
 import { signOut } from "next-auth/react";
 import EmailBuilder from "@/components/EmailBuilder";
 import { DEFAULT_TIMEZONE } from "@/lib/constants";
 import { formatInTimeZone } from "@/lib/timezone";
+
+const VARIABLE_REGEX = /\{\{([a-zA-Z_][a-zA-Z0-9_ ]*)\}\}/g;
+const BUILT_IN_VARIABLES = new Set(["name"]);
+
+function extractCustomVariables(html: string): string[] {
+  const found = new Set<string>();
+  let match: RegExpExecArray | null;
+  while ((match = VARIABLE_REGEX.exec(html)) !== null) {
+    const key = match[1].trim();
+    if (key && !BUILT_IN_VARIABLES.has(key)) {
+      found.add(key);
+    }
+  }
+  return Array.from(found);
+}
+
+type Toast = {
+  id: number;
+  message: string;
+  tone: "success" | "error";
+};
+
+let nextToastId = 1;
 
 type Template = {
   id: string;
@@ -110,6 +133,24 @@ export default function Home() {
   const [status, setStatus] = useState<string>("Loading data...");
   const [currentUser, setCurrentUser] = useState<CurrentUser | null>(null);
   const [defaultTimezone, setDefaultTimezone] = useState(DEFAULT_TIMEZONE);
+  const [toasts, setToasts] = useState<Toast[]>([]);
+  const toastTimersRef = useRef<Map<number, ReturnType<typeof setTimeout>>>(new Map());
+
+  const showToast = useCallback((message: string, tone: "success" | "error" = "success") => {
+    const id = nextToastId++;
+    setToasts((prev) => [...prev, { id, message, tone }]);
+    const timer = setTimeout(() => {
+      setToasts((prev) => prev.filter((t) => t.id !== id));
+      toastTimersRef.current.delete(id);
+    }, 3500);
+    toastTimersRef.current.set(id, timer);
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      toastTimersRef.current.forEach((timer) => clearTimeout(timer));
+    };
+  }, []);
 
   const [selectedTemplateId, setSelectedTemplateId] = useState<string>("");
   const [templateName, setTemplateName] = useState("");
@@ -122,6 +163,7 @@ export default function Home() {
   const [isCopyTemplateModalOpen, setIsCopyTemplateModalOpen] = useState(false);
   const [copyTemplateName, setCopyTemplateName] = useState("");
   const [builderEditor, setBuilderEditor] = useState<Editor | null>(null);
+  const [customVariableName, setCustomVariableName] = useState("");
 
   const [groupName, setGroupName] = useState("");
   const [groupDescription, setGroupDescription] = useState("");
@@ -161,6 +203,7 @@ export default function Home() {
   const [isCampaignPreviewOpen, setIsCampaignPreviewOpen] = useState(false);
   const [campaignSubject, setCampaignSubject] = useState("");
   const [campaignHtml, setCampaignHtml] = useState("");
+  const [campaignVariables, setCampaignVariables] = useState<Record<string, string>>({});
   const [attachments, setAttachments] = useState<StoredAttachment[]>([]);
   const [assetImageUrl, setAssetImageUrl] = useState("");
   const [campaignAttachmentUrl, setCampaignAttachmentUrl] = useState("");
@@ -628,27 +671,50 @@ export default function Home() {
   }
 
   async function onSaveTemplate() {
+    // Read the latest content directly from the editor to avoid stale state
+    // (e.g. when user types in a cell and clicks Save before the update event fires)
+    let latestHtml = templateHtml;
+    let latestDesignJson = templateDesignJson;
+    if (builderEditor) {
+      const editorHtml = builderEditor.getHtml();
+      const editorCss = builderEditor.getCss();
+      latestHtml = `${editorHtml}<style>${editorCss}</style>`;
+      latestDesignJson = JSON.stringify(builderEditor.getProjectData());
+      setTemplateHtml(latestHtml);
+      setTemplateDesignJson(latestDesignJson);
+    }
+
     const payload = {
       name: templateName,
       description: templateDescription,
       subject: templateSubject,
-      html: templateHtml,
-      designJson: templateDesignJson,
+      html: latestHtml,
+      designJson: latestDesignJson,
     };
 
     if (selectedTemplate) {
-      await fetch(`/api/templates/${selectedTemplate.id}`, {
+      const response = await fetch(`/api/templates/${selectedTemplate.id}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
       });
+      if (response.ok) {
+        showToast("Template updated successfully");
+      } else {
+        showToast("Template update failed", "error");
+      }
       setStatus("Template updated");
     } else {
-      await fetch("/api/templates", {
+      const response = await fetch("/api/templates", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
       });
+      if (response.ok) {
+        showToast("Template created successfully");
+      } else {
+        showToast("Template creation failed", "error");
+      }
       setStatus("Template created");
     }
 
@@ -678,6 +744,46 @@ export default function Home() {
     setStatus("Template deleted");
     setSelectedTemplateId("");
     await refreshAll();
+  }
+
+  function insertVariableIntoEditor(variableName: string) {
+    if (!builderEditor || !variableName.trim()) {
+      return;
+    }
+    const tag = `{{${variableName.trim()}}}`;
+    const selected = builderEditor.getSelected();
+    if (selected) {
+      const el = selected.getEl();
+      if (el instanceof HTMLElement && el.isContentEditable) {
+        const doc = el.ownerDocument;
+        const sel = doc.getSelection();
+        if (sel && sel.rangeCount > 0) {
+          const range = sel.getRangeAt(0);
+          range.deleteContents();
+          range.insertNode(doc.createTextNode(tag));
+          range.collapse(false);
+          return;
+        }
+      }
+      // Append to component content if not in content-editable mode
+      const currentHtml = builderEditor.getHtml();
+      const css = builderEditor.getCss();
+      // Insert at cursor position isn't possible - append as text node to selected
+      const currentContent = typeof selected.get === "function" ? selected.get("content") : "";
+      if (typeof selected.set === "function") {
+        selected.set("content", `${currentContent || ""}${tag}`);
+      }
+    } else {
+      // No component selected - append to root
+      builderEditor.addComponents(`<span>${tag}</span>`);
+    }
+  }
+
+  function onInsertCustomVariable() {
+    const name = customVariableName.trim().replace(/\s+/g, "_");
+    if (!name) return;
+    insertVariableIntoEditor(name);
+    setCustomVariableName("");
   }
 
   function onOpenCopyTemplateModal() {
@@ -860,6 +966,14 @@ export default function Home() {
       return;
     }
 
+    // Apply dynamic variable values to the campaign HTML before sending
+    let finalHtml = campaignHtml;
+    for (const [key, value] of Object.entries(campaignVariables)) {
+      if (value) {
+        finalHtml = finalHtml.replaceAll(`{{${key}}}`, value);
+      }
+    }
+
     const response = await fetch("/api/campaigns", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -868,7 +982,7 @@ export default function Home() {
         groupId: campaignGroupId,
         templateId: campaignTemplateId || null,
         subject: campaignSubject,
-        html: campaignHtml,
+        html: finalHtml,
         sendMode: campaignSendMode,
         timeZone: defaultTimezone,
         scheduledForLocal: campaignSendMode === "scheduled" ? campaignScheduledFor : null,
@@ -899,6 +1013,7 @@ export default function Home() {
     setCampaignFailureReportEmail("");
     setCampaignSubject("");
     setCampaignHtml("");
+    setCampaignVariables({});
     setAttachments([]);
 
     if (campaignSendMode === "scheduled" || campaignSendMode === "staggered") {
@@ -947,6 +1062,14 @@ export default function Home() {
     if (template) {
       setCampaignSubject(template.subject);
       setCampaignHtml(template.html);
+      const vars = extractCustomVariables(template.html);
+      const initial: Record<string, string> = {};
+      for (const v of vars) {
+        initial[v] = "";
+      }
+      setCampaignVariables(initial);
+    } else {
+      setCampaignVariables({});
     }
   }
 
@@ -1447,6 +1570,34 @@ export default function Home() {
                 </button>
               </div>
 
+              <div className="mt-3 rounded-xl border border-slate-200 bg-slate-50/60 p-3">
+                <p className="mb-2 text-sm font-medium text-slate-700">Insert Dynamic Variable</p>
+                <p className="mb-2 text-xs text-slate-500">
+                  Add placeholder variables like <code className="rounded bg-slate-200 px-1">{"{{outage_details}}"}</code> that can be filled in when creating a campaign. <code className="rounded bg-slate-200 px-1">{"{{name}}"}</code> is auto-filled with each contact&apos;s name.
+                </p>
+                <div className="flex flex-wrap items-center gap-2">
+                  <button type="button" onClick={() => insertVariableIntoEditor("name")} className="chip-btn text-xs">
+                    {"{{name}}"}
+                  </button>
+                  <span className="text-xs text-slate-400">|</span>
+                  <input
+                    placeholder="Custom variable name"
+                    value={customVariableName}
+                    onChange={(event) => setCustomVariableName(event.target.value)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter") {
+                        event.preventDefault();
+                        onInsertCustomVariable();
+                      }
+                    }}
+                    className="field min-w-[180px] flex-1 !py-1.5 text-sm"
+                  />
+                  <button type="button" onClick={onInsertCustomVariable} className="secondary-btn text-xs" disabled={!customVariableName.trim()}>
+                    Insert variable
+                  </button>
+                </div>
+              </div>
+
               <div className="mt-4">
                 <EmailBuilder
                   initialHtml={templateHtml}
@@ -1574,6 +1725,30 @@ export default function Home() {
                   onChange={(event) => setCampaignSubject(event.target.value)}
                   className="field"
                 />
+
+                {Object.keys(campaignVariables).length > 0 && (
+                  <div className="rounded-xl border border-amber-200 bg-amber-50/60 p-3">
+                    <p className="mb-2 text-sm font-semibold text-amber-800">Template Variables</p>
+                    <p className="mb-3 text-xs text-amber-700">
+                      This template contains dynamic fields. Fill in the values below — they will be inserted into the email content for this campaign.
+                    </p>
+                    <div className="grid gap-2">
+                      {Object.entries(campaignVariables).map(([key, value]) => (
+                        <label key={key} className="grid gap-1 text-sm text-slate-700">
+                          <span className="font-medium text-amber-900">{`{{${key}}}`}</span>
+                          <input
+                            placeholder={`Enter value for ${key}`}
+                            value={value}
+                            onChange={(event) =>
+                              setCampaignVariables((prev) => ({ ...prev, [key]: event.target.value }))
+                            }
+                            className="field"
+                          />
+                        </label>
+                      ))}
+                    </div>
+                  </div>
+                )}
 
                 <textarea
                   required
@@ -2047,6 +2222,21 @@ export default function Home() {
             </div>
           </div>
         )}
+      </div>
+
+      {/* Toast notifications */}
+      <div className="fixed bottom-6 right-6 z-[9999] flex flex-col gap-2">
+        {toasts.map((toast) => (
+          <div
+            key={toast.id}
+            className="animate-toast-in rounded-xl px-5 py-3 text-sm font-semibold text-white shadow-lg"
+            style={{
+              background: toast.tone === "success" ? "#16a34a" : "#dc2626",
+            }}
+          >
+            {toast.message}
+          </div>
+        ))}
       </div>
     </div>
   );
