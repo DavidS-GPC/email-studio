@@ -965,6 +965,11 @@ export default function Home() {
       return;
     }
 
+    if (!campaignHtml) {
+      setStatus("Select a template first");
+      return;
+    }
+
     // Apply dynamic variable values to the campaign HTML before sending
     let finalHtml = campaignHtml;
     for (const [key, value] of Object.entries(campaignVariables)) {
@@ -1640,6 +1645,7 @@ export default function Home() {
                 </select>
 
                 <select
+                  required
                   value={campaignTemplateId}
                   onChange={(event) => onCampaignTemplateChange(event.target.value)}
                   className="field-select"
@@ -1748,15 +1754,6 @@ export default function Home() {
                     </div>
                   </div>
                 )}
-
-                <textarea
-                  required
-                  rows={7}
-                  placeholder="Campaign HTML"
-                  value={campaignHtml}
-                  onChange={(event) => setCampaignHtml(event.target.value)}
-                  className="field-textarea"
-                />
 
                 <div className="rounded-xl border border-slate-200 bg-slate-50/60 p-3">
                   <p className="mb-2 text-sm font-medium">Attachments (file or URL)</p>
