@@ -763,6 +763,9 @@ export default function Home() {
           range.deleteContents();
           range.insertNode(doc.createTextNode(tag));
           range.collapse(false);
+          // Sync the DOM change back to the GrapeJS component model
+          // so getHtml()/getProjectData() include the inserted text
+          selected.set("content", el.innerHTML);
           return;
         }
       }
