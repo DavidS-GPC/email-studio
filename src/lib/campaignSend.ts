@@ -31,6 +31,28 @@ function escapeHtml(value: string) {
     .replaceAll("'", "&#39;");
 }
 
+function getAppBaseUrl(): string {
+  for (const key of ["AUTH_PUBLIC_URL", "NEXTAUTH_URL"]) {
+    const raw = process.env[key]?.trim();
+    if (raw) {
+      try {
+        return new URL(raw).origin;
+      } catch {
+        // skip invalid
+      }
+    }
+  }
+  return "";
+}
+
+function resolveRelativeUrls(html: string): string {
+  const baseUrl = getAppBaseUrl();
+  if (!baseUrl) {
+    return html;
+  }
+  return html.replaceAll('"/uploads/', `"${baseUrl}/uploads/`);
+}
+
 export async function executeCampaignSend(campaignId: string): Promise<CampaignSendResult> {
   const campaign = await prisma.campaign.findUnique({
     where: { id: campaignId },
@@ -98,7 +120,9 @@ export async function executeCampaignSend(campaignId: string): Promise<CampaignS
       continue;
     }
 
-    const personalizedHtml = campaign.html.replaceAll("{{name}}", contactName || "there");
+    const personalizedHtml = resolveRelativeUrls(
+      campaign.html.replaceAll("{{name}}", contactName || "there"),
+    );
 
     try {
       const res = await resend.emails.send({
