@@ -147,8 +147,9 @@ export default function Home() {
   }, []);
 
   useEffect(() => {
+    const timers = toastTimersRef.current;
     return () => {
-      toastTimersRef.current.forEach((timer) => clearTimeout(timer));
+      timers.forEach((timer) => clearTimeout(timer));
     };
   }, []);
 
@@ -766,8 +767,6 @@ export default function Home() {
         }
       }
       // Append to component content if not in content-editable mode
-      const currentHtml = builderEditor.getHtml();
-      const css = builderEditor.getCss();
       // Insert at cursor position isn't possible - append as text node to selected
       const currentContent = typeof selected.get === "function" ? selected.get("content") : "";
       if (typeof selected.set === "function") {
